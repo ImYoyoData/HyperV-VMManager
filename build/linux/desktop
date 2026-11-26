@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=Hyper-V 虚拟机管理助手
+Comment=Hyper-V 虚拟机可视化管理工具
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/hyperv-vmmanager.exe %u
+Terminal=false
+Type=Application
+Icon=hyperv-vmmanager.exe
+Categories=Utility;
+StartupWMClass=hyperv-vmmanager.exe
+
+ 
