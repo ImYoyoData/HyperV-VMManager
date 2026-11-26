@@ -64,10 +64,10 @@ go test ./internal/...
 ## 构建
 
 ```powershell
-wails3 build                # 当前架构，产物在 bin/hyperv-vmmanager.exe
-wails3 build ARCH=amd64     # x64
-wails3 build ARCH=arm64     # Windows on ARM
-wails3 build ARCH=386       # x86
+wails3 build                    # 当前架构，产物在 bin/hyperv-vmmanager.exe
+wails3 task build ARCH=amd64    # x64
+wails3 task build ARCH=arm64    # Windows on ARM
+wails3 task build ARCH=386      # x86
 ```
 
 打包安装程序（需要 NSIS）：
