@@ -83,9 +83,8 @@ type rawEnvironment struct {
 	EnhancedSessionKnown          bool   `json:"enhancedSessionKnown"`
 }
 
-// EnvironmentStatus 读取 Windows 版本、CPU 虚拟化、Hyper-V 功能与增强会话状态。
-func (c *Client) EnvironmentStatus(ctx context.Context) (*EnvironmentStatus, error) {
-	body := `
+// environmentScript 读取 Windows 版本、CPU、Hyper-V 功能与增强会话状态。
+const environmentScript = `
 $reg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
 $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
 $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
@@ -137,8 +136,11 @@ Write-HvResult ([ordered]@{
   enhancedSessionKnown = $enhancedKnown
 })
 `
+
+// EnvironmentStatus 读取 Windows 版本、CPU 虚拟化、Hyper-V 功能与增强会话状态。
+func (c *Client) EnvironmentStatus(ctx context.Context) (*EnvironmentStatus, error) {
 	var raw rawEnvironment
-	if err := c.run(ctx, body, nil, &raw); err != nil {
+	if err := c.run(ctx, environmentScript, nil, &raw); err != nil {
 		return nil, err
 	}
 	status := evaluateEnvironment(raw)

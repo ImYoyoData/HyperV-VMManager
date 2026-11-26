@@ -74,6 +74,7 @@ func TestScriptSyntax(t *testing.T) {
 		"createVM":      createVMScript,
 		"editVM":        editVMScript,
 		"deleteVM":      deleteVMScript,
+		"environment":   environmentScript,
 	}
 
 	for name, body := range scripts {
