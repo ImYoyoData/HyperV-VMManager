@@ -50,6 +50,9 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Run Go tests
+        run: go test ./internal/...
+
       - name: Build (${{ matrix.name }})
         run: wails3 task build ARCH=${{ matrix.arch }}
 
