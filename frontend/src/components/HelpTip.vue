@@ -16,7 +16,7 @@ import { HelpCircleOutline } from "@vicons/ionicons5";
 <style scoped>
 .help-tip-icon {
   font-size: 14px;
-  color: #7f889b;
+  color: var(--muted);
   vertical-align: -2px;
   margin-left: 5px;
   cursor: help;
@@ -24,13 +24,13 @@ import { HelpCircleOutline } from "@vicons/ionicons5";
 }
 
 .help-tip-icon:hover {
-  color: #9fb0cc;
+  color: var(--text-3);
 }
 
 .help-tip-content {
   font-size: 12px;
   line-height: 1.7;
-  color: #cfd6e4;
+  color: var(--text-3);
 }
 
 .help-tip-content :deep(p) {
@@ -47,6 +47,6 @@ import { HelpCircleOutline } from "@vicons/ionicons5";
 }
 
 .help-tip-content :deep(strong) {
-  color: #eef1f7;
+  color: var(--text-strong);
 }
 </style>

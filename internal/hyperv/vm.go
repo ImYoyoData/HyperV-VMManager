@@ -138,3 +138,26 @@ func PowerActionLabel(action PowerAction) string {
 		return string(action)
 	}
 }
+
+// DiskSpaces 返回主机上的固定磁盘容量。
+func (c *Client) DiskSpaces(ctx context.Context) ([]DiskSpace, error) {
+	body := `
+$items = New-Object System.Collections.ArrayList
+foreach ($d in @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue | Sort-Object DeviceID)) {
+  [void]$items.Add([ordered]@{
+    drive = "$($d.DeviceID)"
+    totalBytes = [int64]$d.Size
+    freeBytes = [int64]$d.FreeSpace
+  })
+}
+Write-HvResult @($items)
+`
+	var disks []DiskSpace
+	if err := c.run(ctx, body, nil, &disks); err != nil {
+		return nil, err
+	}
+	if disks == nil {
+		disks = []DiskSpace{}
+	}
+	return disks, nil
+}

@@ -25,6 +25,9 @@ import * as settings$0 from "../settings/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as tasks$0 from "../tasks/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as tunnel$0 from "../tunnel/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -60,9 +63,12 @@ export function ClearFinishedTasks(): $CancellablePromise<number> {
 
 /**
  * ConnectHost 连接远程主机并设为当前主机；本机直接切换。
+ * password 为空时会优先使用 Windows 凭据管理器里已保存的密码；
+ * remember 为 true 时会把本次密码保存到凭据管理器，供下次直接连接和
+ * VMConnect / Hyper-V 管理器复用。
  */
-export function ConnectHost(id: string, password: string): $CancellablePromise<hosts$0.Item | null> {
-    return $Call.ByID(1517649602, id, password);
+export function ConnectHost(id: string, password: string, remember: boolean): $CancellablePromise<hosts$0.Item | null> {
+    return $Call.ByID(1517649602, id, password, remember);
 }
 
 /**
@@ -73,10 +79,39 @@ export function ConnectVM(name: string): $CancellablePromise<void> {
 }
 
 /**
+ * CreateAPIKey 新建 API Key。
+ */
+export function CreateAPIKey(request: $models.APIKeyRequest): $CancellablePromise<settings$0.APIKey | null> {
+    return $Call.ByID(2116837465, request);
+}
+
+/**
  * CreateSwitch 创建虚拟交换机。
  */
 export function CreateSwitch(req: hyperv$0.CreateSwitchRequest): $CancellablePromise<void> {
     return $Call.ByID(2038897166, req);
+}
+
+/**
+ * DeleteAPIKey 删除 API Key。
+ */
+export function DeleteAPIKey(id: string): $CancellablePromise<void> {
+    return $Call.ByID(3884941814, id);
+}
+
+/**
+ * FixRemoteWinRM 在本机修复 WinRM 客户端配置：启动 WinRM 服务并把远程主机
+ * 加入 TrustedHosts。非管理员运行时会弹出 UAC 请求提权。
+ */
+export function FixRemoteWinRM(host: string): $CancellablePromise<string> {
+    return $Call.ByID(4114050778, host);
+}
+
+/**
+ * ForgetHostCredential 删除远程主机在 Windows 凭据管理器中保存的密码。
+ */
+export function ForgetHostCredential(id: string): $CancellablePromise<void> {
+    return $Call.ByID(521564672, id);
 }
 
 /**
@@ -101,6 +136,13 @@ export function GetBootstrap(): $CancellablePromise<$models.Bootstrap | null> {
 }
 
 /**
+ * GetDataDirectory 返回应用数据目录。
+ */
+export function GetDataDirectory(): $CancellablePromise<string> {
+    return $Call.ByID(3343847685);
+}
+
+/**
  * GetEnhancedSessionStatus 读取增强会话状态。
  */
 export function GetEnhancedSessionStatus(): $CancellablePromise<hyperv$0.EnhancedSessionStatus | null> {
@@ -112,6 +154,13 @@ export function GetEnhancedSessionStatus(): $CancellablePromise<hyperv$0.Enhance
  */
 export function GetEnvironmentStatus(): $CancellablePromise<hyperv$0.EnvironmentStatus | null> {
     return $Call.ByID(619197725);
+}
+
+/**
+ * GetHostCapacity 汇总指定主机的 CPU / 内存 / 磁盘分配与剩余情况。
+ */
+export function GetHostCapacity(hostID: string): $CancellablePromise<hyperv$0.HostCapacity | null> {
+    return $Call.ByID(374996684, hostID);
 }
 
 /**
@@ -143,6 +192,13 @@ export function GetTaskStats(): $CancellablePromise<tasks$0.Stats> {
 }
 
 /**
+ * GetTunnelStatus 返回内网穿透运行状态。
+ */
+export function GetTunnelStatus(): $CancellablePromise<tunnel$0.Status> {
+    return $Call.ByID(3563441258);
+}
+
+/**
  * GetVM 返回单个虚拟机详情。
  */
 export function GetVM(name: string): $CancellablePromise<hyperv$0.VM | null> {
@@ -150,10 +206,24 @@ export function GetVM(name: string): $CancellablePromise<hyperv$0.VM | null> {
 }
 
 /**
+ * GetVersions 返回应用与 Wails 版本。
+ */
+export function GetVersions(): $CancellablePromise<[string, string]> {
+    return $Call.ByID(414457859);
+}
+
+/**
  * IsAdmin 返回当前是否具备管理员权限。
  */
 export function IsAdmin(): $CancellablePromise<boolean> {
     return $Call.ByID(2049700693);
+}
+
+/**
+ * ListAPIKeys 返回所有 API Key（包含 Token，仅桌面端使用）。
+ */
+export function ListAPIKeys(): $CancellablePromise<settings$0.APIKey[] | null> {
+    return $Call.ByID(2123259910);
 }
 
 /**
@@ -206,6 +276,13 @@ export function ListVMsForHost(hostID: string): $CancellablePromise<hyperv$0.VM[
 }
 
 /**
+ * OpenLogDir 在资源管理器中打开日志目录。
+ */
+export function OpenLogDir(): $CancellablePromise<void> {
+    return $Call.ByID(539990919);
+}
+
+/**
  * OpenTool 打开系统管理工具。
  */
 export function OpenTool(tool: string): $CancellablePromise<void> {
@@ -220,10 +297,31 @@ export function PickDirectory(title: string): $CancellablePromise<string> {
 }
 
 /**
+ * PickDirectoryIn 与 PickDirectory 相同，但会从指定目录开始浏览。
+ */
+export function PickDirectoryIn(title: string, directory: string): $CancellablePromise<string> {
+    return $Call.ByID(3499657805, title, directory);
+}
+
+/**
  * PickFile 打开文件选择器，返回绝对路径；取消时返回空字符串。
  */
 export function PickFile(title: string, filterName: string, filterPattern: string): $CancellablePromise<string> {
     return $Call.ByID(1881773181, title, filterName, filterPattern);
+}
+
+/**
+ * PickFileIn 与 PickFile 相同，但会从指定目录开始浏览。
+ */
+export function PickFileIn(title: string, filterName: string, filterPattern: string, directory: string): $CancellablePromise<string> {
+    return $Call.ByID(2283163446, title, filterName, filterPattern, directory);
+}
+
+/**
+ * RegenerateAPIKeyToken 重新生成 API Key 的 Token。
+ */
+export function RegenerateAPIKeyToken(id: string): $CancellablePromise<settings$0.APIKey | null> {
+    return $Call.ByID(477993660, id);
 }
 
 /**
@@ -245,6 +343,21 @@ export function RemoveSwitch(name: string): $CancellablePromise<void> {
  */
 export function RestartElevated(): $CancellablePromise<void> {
     return $Call.ByID(188309035);
+}
+
+/**
+ * RestartTunnel 按当前设置重新连接 frps，返回即时状态。
+ */
+export function RestartTunnel(): $CancellablePromise<tunnel$0.Status> {
+    return $Call.ByID(2764120487);
+}
+
+/**
+ * SaveHostCredential 把远程主机凭据写入 Windows 凭据管理器，供 VMConnect 与
+ * Hyper-V 管理器复用；密码不会写入应用设置文件。
+ */
+export function SaveHostCredential(host: string, username: string, password: string): $CancellablePromise<void> {
+    return $Call.ByID(762137836, host, username, password);
 }
 
 /**
@@ -315,6 +428,13 @@ export function SuggestCloneDirectory(sourceName: string): $CancellablePromise<s
  */
 export function SuggestCloneDirectoryForHost(hostID: string, sourceName: string): $CancellablePromise<string> {
     return $Call.ByID(2243868401, hostID, sourceName);
+}
+
+/**
+ * UpdateAPIKey 修改名称、权限和计算机范围。
+ */
+export function UpdateAPIKey(request: $models.APIKeyRequest): $CancellablePromise<settings$0.APIKey | null> {
+    return $Call.ByID(204084592, request);
 }
 
 /**

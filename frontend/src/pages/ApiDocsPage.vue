@@ -87,6 +87,29 @@ const groups: ApiGroup[] = [
         description: "返回所有虚拟交换机及类型、上行网卡、管理 OS 状态。",
         response: `{"items":[{"name":"Default Switch","switchType":"Internal","allowManagementOS":true,...}]}`,
       },
+      {
+        method: "GET",
+        path: "/api/v1/hosts/{id}/capacity",
+        title: "计算机容量",
+        description:
+          "汇总指定计算机的 CPU、内存、磁盘总量与已分配/剩余情况，用于新建虚拟机前判断资源是否足够。",
+        params: [{ name: "id", type: "string（路径）", required: "是", description: "计算机 ID" }],
+        response: `{"hostID":"local","logicalProcessors":16,"allocatedCPU":4,"availableCPU":12,"totalMemoryMB":32768,"allocatedMemoryMB":8192,"availableMemoryMB":20160,"disks":[...]}`,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/tunnel",
+        title: "内网穿透状态",
+        description: "返回内置 frpc 客户端是否启用、运行、已连接，以及 frps 地址与公网映射地址。",
+        response: `{"enabled":true,"running":true,"connected":true,"serverAddr":"frp.example.com:7000","remoteAddr":"frp.example.com:17890"}`,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/skill.md",
+        title: "AI 技能包（匿名）",
+        description:
+          "返回一份 Markdown 格式的 API 技能包，可直接交给其他 AI 作为上下文。该接口不需要 Token。",
+      },
     ],
   },
   {
@@ -306,7 +329,7 @@ const groups: ApiGroup[] = [
 ];
 
 const baseURL = computed(() => app.apiBaseURL || "http://127.0.0.1:17890");
-const token = computed(() => app.settings?.api.token || "<token>");
+const token = computed(() => app.settings?.apiKeys?.[0]?.token || "<token>");
 
 const taskFields: ApiParam[] = [
   { name: "id", type: "string", description: "任务 ID，用于后续查询" },
@@ -327,6 +350,82 @@ async function copyText(value: string) {
   } catch {
     message.warning("无法访问剪贴板，请手动复制");
   }
+}
+
+const aiPrompt = computed(() => `# Hyper-V 虚拟机管理助手 API 技能包
+
+你是负责通过 API 管理 Hyper-V 虚拟机的 AI 助手。
+
+## 连接信息
+Base URL: ${baseURL.value}
+认证头: Authorization: Bearer <API_KEY>
+Content-Type: application/json
+
+## 规则
+1. 新建、克隆、编辑、删除、电源操作都是异步任务，返回 202 和 task.id；用 GET /api/v1/tasks/{id} 轮询，status 为 queued/running/succeeded/failed/canceled。
+2. 默认操作“当前主机”；可以用 ?hostId=<id> 查询参数或 X-HyperV-Host 请求头指定目标计算机。
+3. API Key 可能只允许管理部分计算机；403 表示没有该计算机权限。
+4. 远程计算机上的目录、镜像、ISO 必须传该远程计算机上的绝对路径。
+5. 电源 action：start | stop | turnoff | save | pause | resume | restart。
+6. 删除虚拟机默认只删除配置；需要同时删除文件时传 deleteFiles=true。
+
+## 常用接口
+- GET /api/v1/health
+- GET /api/v1/hosts
+- GET /api/v1/hosts/{id}
+- GET /api/v1/hosts/{id}/capacity
+- POST /api/v1/hosts/{id}/connect        {"password":"...","remember":true}
+- GET /api/v1/vms?hostId=<hostId>
+- GET /api/v1/vms/{name}
+- POST /api/v1/vms?hostId=<hostId>      新建虚拟机
+- POST /api/v1/vms/{name}/clone?hostId=<hostId>
+- PATCH /api/v1/vms/{name}
+- DELETE /api/v1/vms/{name}?deleteFiles=false
+- POST /api/v1/vms/{name}/power          {"action":"start"}
+- GET /api/v1/tasks?limit=100
+- GET /api/v1/tasks/{id}
+- POST /api/v1/tasks/{id}/cancel
+- GET /api/v1/tasks/stats
+- GET /api/v1/switches
+- GET /api/v1/host
+- GET /api/v1/tunnel
+
+## 新建虚拟机示例
+POST /api/v1/vms?hostId=<hostId>
+{
+  "name": "win11-test",
+  "generation": 2,
+  "directory": "D:\\\\VMs",
+  "memory": {"startupMB":4096,"dynamic":false,"minimumMB":1024,"maximumMB":8192},
+  "cpuCount": 4,
+  "switchName": "Default Switch",
+  "bandwidthMbps": 100,
+  "diskMode": "differencing",
+  "imagePath": "D:\\\\Images\\\\win11.vhdx",
+  "diskSizeGB": 60,
+  "isoPath": "D:\\\\Images\\\\win11.iso",
+  "disableCheckpoints": true
+}
+
+## 推荐工作流
+1. GET /hosts 找到目标计算机，记录 id。
+2. 未连接时 POST /hosts/{id}/connect。
+3. GET /vms?hostId=<id> 确认名称不冲突，并读取网络与磁盘信息。
+4. POST /vms?hostId=<id> 提交新建/克隆任务。
+5. 轮询 GET /tasks/{id}，直到 succeeded 或 failed；失败时读取 error 与 logs。
+`);
+
+function downloadSkillPack() {
+  const blob = new Blob([aiPrompt.value], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "hyperv-vm-api-skill.md";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  message.success("技能包已下载");
 }
 </script>
 
@@ -349,6 +448,31 @@ async function copyText(value: string) {
       复制 Base URL
     </n-button>
   </PageHeader>
+
+  <div class="panel ai-panel">
+    <div class="panel-header">
+      <div>
+        <div class="card-title">AI 快速接入</div>
+        <div class="card-subtitle">把提示词直接粘贴给其他 AI，或下载技能包作为项目上下文</div>
+      </div>
+      <div class="spacer"></div>
+      <n-button size="small" @click="copyText(aiPrompt)">
+        <template #icon>
+          <n-icon :component="CopyOutline" />
+        </template>
+        复制提示词
+      </n-button>
+      <n-button size="small" type="primary" ghost @click="downloadSkillPack">
+        下载技能包
+      </n-button>
+    </div>
+    <pre class="code-block ai-prompt">{{ aiPrompt }}</pre>
+    <div class="form-hint" style="margin-top: 8px">
+      也可以直接访问
+      <span class="mono-text">{{ baseURL }}/api/v1/skill.md</span>
+      获取同一份技能包。
+    </div>
+  </div>
 
   <div class="api-overview panel">
     <div class="overview-grid">
@@ -568,7 +692,7 @@ do {
 .api-group-title {
   font-size: 14px;
   font-weight: 600;
-  color: #eef1f7;
+  color: var(--text-strong);
 }
 
 .api-group-desc {
@@ -599,28 +723,28 @@ do {
 }
 
 .method-get {
-  background: #15283f;
-  color: #7db3ff;
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-fg);
 }
 
 .method-post {
-  background: #17342a;
-  color: #7fd9ad;
+  background: var(--chip-green-bg);
+  color: var(--chip-green-fg);
 }
 
 .method-patch {
-  background: #392d14;
-  color: #e6bc6f;
+  background: var(--chip-amber-bg);
+  color: var(--chip-amber-fg);
 }
 
 .method-delete {
-  background: #3a1c1f;
-  color: #f08c8c;
+  background: var(--chip-red-bg);
+  color: var(--chip-red-fg);
 }
 
 .endpoint-path {
   flex: 0 1 auto;
-  color: #d7deea;
+  color: var(--text-2);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -635,7 +759,7 @@ do {
 
 .endpoint-description {
   font-size: 12.5px;
-  color: #a6b0c2;
+  color: var(--text-3);
   line-height: 1.75;
   margin-bottom: 12px;
 }
@@ -647,7 +771,7 @@ do {
 .api-section-title {
   font-size: 11.5px;
   font-weight: 600;
-  color: #cfd6e4;
+  color: var(--text-3);
   margin-bottom: 6px;
 }
 
@@ -666,8 +790,8 @@ do {
 .api-table th {
   text-align: left;
   padding: 8px 10px;
-  background: #181c26;
-  color: #aeb8c9;
+  background: var(--panel-strong);
+  color: var(--text-3);
   font-weight: 500;
   white-space: nowrap;
   border-bottom: 1px solid var(--border);
@@ -675,8 +799,8 @@ do {
 
 .api-table td {
   padding: 8px 10px;
-  border-bottom: 1px solid #1c202a;
-  color: #c3cbd9;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-3);
   line-height: 1.6;
   vertical-align: top;
 }
@@ -689,9 +813,9 @@ do {
   margin: 0;
   padding: 12px;
   border-radius: 8px;
-  background: #0b0d12;
+  background: var(--code-bg);
   border: 1px solid var(--border);
-  color: #b7c0d0;
+  color: var(--text-3);
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 11.5px;
   line-height: 1.7;
@@ -703,5 +827,14 @@ do {
   .overview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+.ai-panel {
+  margin-bottom: 16px;
+}
+
+.ai-prompt {
+  max-height: 300px;
+  overflow-y: auto;
 }
 </style>

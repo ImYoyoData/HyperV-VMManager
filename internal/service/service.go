@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,15 +17,18 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"hypervvmmanager/internal/applog"
+	"hypervvmmanager/internal/credentials"
 	"hypervvmmanager/internal/hosts"
 	"hypervvmmanager/internal/httpapi"
 	"hypervvmmanager/internal/hyperv"
 	"hypervvmmanager/internal/settings"
 	"hypervvmmanager/internal/tasks"
+	"hypervvmmanager/internal/tunnel"
 )
 
 const (
-	appVersion   = "0.1.1"
+	appVersion   = "0.2.0"
 	wailsVersion = "3.1.0"
 )
 
@@ -38,6 +43,7 @@ type Bootstrap struct {
 	IsAdmin      bool              `json:"isAdmin"`
 	DataDir      string            `json:"dataDir"`
 	API          httpapi.Status    `json:"api"`
+	Tunnel       tunnel.Status     `json:"tunnel"`
 	TaskStats    tasks.Stats       `json:"taskStats"`
 	ActiveHost   *hosts.Item       `json:"activeHost,omitempty"`
 	AppVersion   string            `json:"appVersion"`
@@ -50,6 +56,7 @@ type HyperVService struct {
 	settings  *settings.Store
 	hostStore *hosts.Store
 	api       *httpapi.Server
+	tunnel    *tunnel.Runner
 
 	mu           sync.RWMutex
 	clients      map[string]*hyperv.Client
@@ -63,6 +70,7 @@ func New(queue *tasks.Queue, store *settings.Store, hostStore *hosts.Store) *Hyp
 		queue:        queue,
 		settings:     store,
 		hostStore:    hostStore,
+		tunnel:       tunnel.New(),
 		clients:      map[string]*hyperv.Client{hosts.LocalID: local},
 		activeHostID: hosts.LocalID,
 	}
@@ -89,11 +97,52 @@ func (s *HyperVService) clientForHost(hostID string) (*hyperv.Client, error) {
 		hostID = hosts.LocalID
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	client := s.clients[hostID]
-	if client == nil {
-		return nil, fmt.Errorf("主机尚未连接或已断开: %s", hostID)
+	s.mu.RUnlock()
+	if client != nil {
+		return client, nil
 	}
+
+	// 连接缓存不存在时，尝试用 Windows 凭据管理器里保存的密码自动连接。
+	// 这样新建、克隆、编辑等操作在应用重启后仍然可以直接使用。
+	profile, err := s.hostStore.Get(hostID)
+	if err != nil {
+		return nil, err
+	}
+	if profile.Address == "" {
+		return nil, fmt.Errorf("主机尚未连接: %s", hostID)
+	}
+	username := profile.Username
+	password := ""
+	if storedUser, storedPass, ok := credentials.Load(profile.Address); ok {
+		username = storedUser
+		password = storedPass
+	} else if strings.TrimSpace(username) != "" {
+		return nil, fmt.Errorf("远程主机 %s 尚未连接，请先在“计算机”页面输入密码连接", profile.Address)
+	}
+
+	autoClient := hyperv.NewClientForTarget(hyperv.Target{
+		ID:             profile.ID,
+		Name:           profile.Name,
+		ComputerName:   profile.Address,
+		Port:           profile.Port,
+		UseSSL:         profile.UseSSL,
+		Username:       username,
+		Password:       password,
+		Authentication: profile.Authentication,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := autoClient.TestConnection(ctx); err != nil {
+		return nil, fmt.Errorf("自动连接远程主机 %s 失败: %w", profile.Address, err)
+	}
+
+	s.mu.Lock()
+	if s.clients[hostID] == nil {
+		s.clients[hostID] = autoClient
+	}
+	client = s.clients[hostID]
+	s.mu.Unlock()
 	return client, nil
 }
 
@@ -127,6 +176,7 @@ func (s *HyperVService) hostItem(profile hosts.Profile) hosts.Item {
 		IsLocal:         profile.Address == "",
 		Connected:       s.clients[profile.ID] != nil,
 		Active:          s.activeHostID == profile.ID,
+		PasswordSaved:   profile.Address != "" && credentials.Saved(profile.Address),
 		LastConnectedAt: profile.LastConnectedAt,
 	}
 }
@@ -167,9 +217,15 @@ func (s *HyperVService) AddHost(request hosts.Request) (*hosts.Item, error) {
 
 // UpdateHost 修改远程主机配置。
 func (s *HyperVService) UpdateHost(request hosts.Request) (*hosts.Item, error) {
+	oldProfile, _ := s.hostStore.Get(request.ID)
 	profile, err := s.hostStore.Update(request)
 	if err != nil {
 		return nil, err
+	}
+	// 地址变化后旧地址保存的凭据不再适用。
+	if oldProfile != nil && oldProfile.Address != "" &&
+		!strings.EqualFold(oldProfile.Address, profile.Address) {
+		_ = credentials.Delete(oldProfile.Address)
 	}
 	// 配置变化后，旧的连接缓存不再可信。
 	s.mu.Lock()
@@ -184,8 +240,12 @@ func (s *HyperVService) UpdateHost(request hosts.Request) (*hosts.Item, error) {
 
 // RemoveHost 删除远程主机配置并断开缓存。
 func (s *HyperVService) RemoveHost(id string) error {
+	profile, _ := s.hostStore.Get(id)
 	if err := s.hostStore.Remove(id); err != nil {
 		return err
+	}
+	if profile != nil && profile.Address != "" {
+		_ = credentials.Delete(profile.Address)
 	}
 	s.mu.Lock()
 	delete(s.clients, id)
@@ -198,7 +258,10 @@ func (s *HyperVService) RemoveHost(id string) error {
 }
 
 // ConnectHost 连接远程主机并设为当前主机；本机直接切换。
-func (s *HyperVService) ConnectHost(id string, password string) (*hosts.Item, error) {
+// password 为空时会优先使用 Windows 凭据管理器里已保存的密码；
+// remember 为 true 时会把本次密码保存到凭据管理器，供下次直接连接和
+// VMConnect / Hyper-V 管理器复用。
+func (s *HyperVService) ConnectHost(id string, password string, remember bool) (*hosts.Item, error) {
 	profile, err := s.hostStore.Get(id)
 	if err != nil {
 		return nil, err
@@ -229,9 +292,18 @@ func (s *HyperVService) ConnectHost(id string, password string) (*hosts.Item, er
 			s.emitHostChanged()
 			return &item, nil
 		}
-		if strings.TrimSpace(profile.Username) != "" {
-			return nil, errors.New("请输入远程主机密码")
+	}
+
+	providedPassword := strings.TrimSpace(password) != ""
+	username := profile.Username
+	if !providedPassword {
+		if storedUser, storedPass, ok := credentials.Load(profile.Address); ok {
+			username = storedUser
+			password = storedPass
 		}
+	}
+	if password == "" && strings.TrimSpace(username) != "" {
+		return nil, errors.New("请输入远程主机密码，或在连接时勾选“记住密码”")
 	}
 
 	target := hyperv.Target{
@@ -240,15 +312,18 @@ func (s *HyperVService) ConnectHost(id string, password string) (*hosts.Item, er
 		ComputerName:   profile.Address,
 		Port:           profile.Port,
 		UseSSL:         profile.UseSSL,
-		Username:       profile.Username,
+		Username:       username,
 		Password:       password,
 		Authentication: profile.Authentication,
 	}
 	client := hyperv.NewClientForTarget(target)
 
+	applog.Info("连接主机 %s (%s)，用户 %s", profile.Name, profile.Address, username)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	if _, err := client.TestConnection(ctx); err != nil {
+	info, err := client.TestConnection(ctx)
+	if err != nil {
+		applog.Error("连接主机 %s 失败: %v", profile.Address, err)
 		return nil, fmt.Errorf("连接远程主机 %s 失败: %w", profile.Address, err)
 	}
 
@@ -258,10 +333,49 @@ func (s *HyperVService) ConnectHost(id string, password string) (*hosts.Item, er
 	s.mu.Unlock()
 	s.hostStore.MarkConnected(id)
 	profile.LastConnectedAt = time.Now().Format(time.RFC3339)
+	applog.Info("已连接主机 %s (%s)", profile.Name, profile.Address)
+
+	switch {
+	case remember && password != "" && strings.TrimSpace(username) != "":
+		credUser := username
+		// 使用远程主机的本地账户格式，VMConnect / Hyper-V 管理器才能直接用。
+		if info != nil && info.ComputerName != "" && info.UserName != "" {
+			credUser = info.ComputerName + `\` + info.UserName
+		}
+		_ = credentials.Save(profile.Address, credUser, password)
+	case !remember && providedPassword:
+		_ = credentials.Delete(profile.Address)
+	}
 
 	item := s.hostItem(*profile)
 	s.emitHostChanged()
 	return &item, nil
+}
+
+// ForgetHostCredential 删除远程主机在 Windows 凭据管理器中保存的密码。
+func (s *HyperVService) ForgetHostCredential(id string) error {
+	profile, err := s.hostStore.Get(id)
+	if err != nil {
+		return err
+	}
+	if profile.Address == "" {
+		return nil
+	}
+	return credentials.Delete(profile.Address)
+}
+
+// FixRemoteWinRM 在本机修复 WinRM 客户端配置：启动 WinRM 服务并把远程主机
+// 加入 TrustedHosts。非管理员运行时会弹出 UAC 请求提权。
+func (s *HyperVService) FixRemoteWinRM(host string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	return hyperv.FixClientWinRM(ctx, host)
+}
+
+// SaveHostCredential 把远程主机凭据写入 Windows 凭据管理器，供 VMConnect 与
+// Hyper-V 管理器复用；密码不会写入应用设置文件。
+func (s *HyperVService) SaveHostCredential(host, username, password string) error {
+	return hyperv.SaveHostCredential(host, username, password)
 }
 
 // SetActiveHost 切换到已连接的主机。
@@ -297,6 +411,11 @@ func (s *HyperVService) ServiceStartup(ctx context.Context, _ application.Servic
 	if app := application.Get(); app != nil {
 		s.queue.SetEmitter(func(task tasks.Task) {
 			app.Event.Emit("task:update", task)
+			applog.Info("任务 %s [%s] 主机=%s 目标=%s 状态=%s 进度=%d%% 步骤=%s",
+				task.ID, task.Kind, task.HostID, task.Target, task.Status, task.Progress, task.Step)
+			if strings.TrimSpace(task.Error) != "" {
+				applog.Error("任务 %s 失败: %s", task.ID, task.Error)
+			}
 			if task.Status != tasks.StatusQueued && task.Status != tasks.StatusRunning {
 				app.Event.Emit("task:finished", task)
 			}
@@ -304,24 +423,56 @@ func (s *HyperVService) ServiceStartup(ctx context.Context, _ application.Servic
 	}
 	s.queue.Start(ctx)
 
-	cfg := s.settings.Get().API
+	cfg := s.settings.Get()
+	_ = applog.Init(cfg.LogDir)
+	applog.Info("应用启动，版本 %s，日志目录 %s", appVersion, cfg.LogDir)
 	if s.api != nil {
 		s.api.Apply(httpapi.Config{
-			Enabled:       cfg.Enabled,
-			ListenAddress: cfg.ListenAddress,
-			Port:          cfg.Port,
-			Token:         cfg.Token,
+			Enabled:       cfg.Web.Enabled,
+			ListenAddress: cfg.Web.ListenAddress,
+			Port:          cfg.Web.Port,
+			Username:      cfg.Web.Username,
+			Password:      cfg.Web.Password,
+			APIKeys:       cfg.APIKeys,
 		})
 	}
+	s.tunnel.Apply(tunnel.ConfigFromSettings(cfg))
 	return nil
+}
+
+// GetDataDirectory 返回应用数据目录。
+func (s *HyperVService) GetDataDirectory() string {
+	return s.settings.DataDir()
+}
+
+// OpenLogDir 在资源管理器中打开日志目录。
+func (s *HyperVService) OpenLogDir() error {
+	dir := s.settings.Get().LogDir
+	if strings.TrimSpace(dir) == "" {
+		return errors.New("日志目录未配置")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("日志目录无法创建: %w", err)
+	}
+	cmd := exec.Command("explorer.exe", dir)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	return cmd.Start()
+}
+
+// GetVersions 返回应用与 Wails 版本。
+func (s *HyperVService) GetVersions() (string, string) {
+	return appVersion, wailsVersion
 }
 
 // ServiceShutdown 由 Wails 在应用关闭时调用。
 func (s *HyperVService) ServiceShutdown() error {
+	applog.Info("应用退出")
 	s.queue.Stop()
+	s.tunnel.Stop()
 	if s.api != nil {
 		s.api.Shutdown()
 	}
+	applog.Close()
 	return nil
 }
 
@@ -445,6 +596,7 @@ func (s *HyperVService) GetBootstrap() (*Bootstrap, error) {
 		Settings:     current,
 		IsAdmin:      hyperv.IsAdmin(),
 		DataDir:      s.settings.DataDir(),
+		Tunnel:       s.tunnel.Status(),
 		TaskStats:    s.queue.Stats(),
 		AppVersion:   appVersion,
 		WailsVersion: wailsVersion,
@@ -518,6 +670,51 @@ func (s *HyperVService) ListVMsForHost(hostID string) ([]hyperv.VM, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	return client.ListVMs(ctx)
+}
+
+// GetHostCapacity 汇总指定主机的 CPU / 内存 / 磁盘分配与剩余情况。
+func (s *HyperVService) GetHostCapacity(hostID string) (*hyperv.HostCapacity, error) {
+	client, err := s.clientForHost(hostID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	info, err := client.HostInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	vms, err := client.ListVMs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	capacity := &hyperv.HostCapacity{
+		HostID:            hostID,
+		Name:              info.ComputerName,
+		IsLocal:           client.Target().IsLocal(),
+		LogicalProcessors: info.LogicalProcessors,
+		TotalMemoryMB:     info.TotalMemoryMB,
+	}
+	for _, vm := range vms {
+		capacity.AllocatedCPU += vm.ProcessorCount
+		capacity.AllocatedMemoryMB += vm.MemoryStartupMB
+	}
+	capacity.AvailableCPU = capacity.LogicalProcessors - capacity.AllocatedCPU
+	capacity.ReservedMemoryMB = capacity.TotalMemoryMB / 5
+	if capacity.ReservedMemoryMB < 2048 {
+		capacity.ReservedMemoryMB = 2048
+	}
+	if capacity.ReservedMemoryMB > capacity.TotalMemoryMB {
+		capacity.ReservedMemoryMB = capacity.TotalMemoryMB / 2
+	}
+	capacity.AvailableMemoryMB = capacity.TotalMemoryMB - capacity.ReservedMemoryMB - capacity.AllocatedMemoryMB
+	if disks, err := client.DiskSpaces(ctx); err == nil {
+		capacity.Disks = disks
+	} else {
+		capacity.Disks = []hyperv.DiskSpace{}
+	}
+	return capacity, nil
 }
 
 // ListSwitchesForHost 返回指定主机的虚拟交换机。
@@ -840,6 +1037,12 @@ func (s *HyperVService) SaveSettings(value settings.Settings) (*settings.Setting
 	if strings.TrimSpace(value.StorageRoot) == "" {
 		return nil, errors.New("默认存储目录不能为空")
 	}
+	if strings.TrimSpace(value.LogDir) == "" {
+		return nil, errors.New("日志目录不能为空")
+	}
+	if err := os.MkdirAll(value.LogDir, 0o755); err != nil {
+		return nil, fmt.Errorf("日志目录无法创建: %w", err)
+	}
 	if err := hyperv.ValidateAbsoluteDirectory(value.StorageRoot); err != nil {
 		return nil, fmt.Errorf("默认存储目录无效: %w", err)
 	}
@@ -858,19 +1061,225 @@ func (s *HyperVService) SaveSettings(value settings.Settings) (*settings.Setting
 	if err := hyperv.ValidateBandwidth(value.DefaultBandwidthMbps); err != nil {
 		return nil, err
 	}
+	if value.Web.Port < 1 || value.Web.Port > 65535 {
+		return nil, errors.New("网页控制台端口必须在 1 到 65535 之间")
+	}
+	if strings.TrimSpace(value.Web.Username) == "" {
+		return nil, errors.New("网页控制台用户名不能为空")
+	}
+	if value.Web.Password != "" && len(value.Web.Password) < 6 {
+		return nil, errors.New("网页控制台密码至少 6 位；留空表示保持不变")
+	}
+	if value.Tunnel.Enabled {
+		if err := tunnel.Validate(tunnel.ConfigFromSettings(value)); err != nil {
+			return nil, err
+		}
+	}
 	saved, err := s.settings.Save(value)
 	if err != nil {
 		return nil, err
 	}
-	if s.api != nil {
-		s.api.Apply(httpapi.Config{
-			Enabled:       saved.API.Enabled,
-			ListenAddress: saved.API.ListenAddress,
-			Port:          saved.API.Port,
-			Token:         saved.API.Token,
-		})
-	}
+	_ = applog.Init(saved.LogDir)
+	applog.Info("设置已保存，日志目录 %s", saved.LogDir)
+	s.applyWebConfig(saved)
+	s.applyTunnel(saved)
+	s.applyAutoStart(saved.AutoStart)
 	return &saved, nil
+}
+
+func (s *HyperVService) applyAutoStart(enabled bool) {
+	executable, err := os.Executable()
+	if err != nil {
+		return
+	}
+	const key = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+	const name = "HyperV-VMManager"
+	if enabled {
+		_ = exec.Command("reg", "add", key, "/v", name, "/t", "REG_SZ", "/d", executable, "/f").Run()
+		return
+	}
+	_ = exec.Command("reg", "delete", key, "/v", name, "/f").Run()
+}
+
+// APIKeyRequest 是新增/编辑 API Key 的输入。
+type APIKeyRequest struct {
+	ID         string   `json:"id,omitempty"`
+	Name       string   `json:"name"`
+	Permission string   `json:"permission"`
+	HostIDs    []string `json:"hostIDs,omitempty"`
+}
+
+// ListAPIKeys 返回所有 API Key（包含 Token，仅桌面端使用）。
+func (s *HyperVService) ListAPIKeys() ([]settings.APIKey, error) {
+	current := s.settings.Get()
+	return current.APIKeys, nil
+}
+
+// CreateAPIKey 新建 API Key。
+func (s *HyperVService) CreateAPIKey(request APIKeyRequest) (*settings.APIKey, error) {
+	if err := s.validateAPIKeyRequest(request); err != nil {
+		return nil, err
+	}
+	key := settings.APIKey{
+		ID:         "key-" + randomHex(4),
+		Name:       strings.TrimSpace(request.Name),
+		Token:      randomHex(16),
+		Permission: request.Permission,
+		HostIDs:    request.HostIDs,
+		CreatedAt:  time.Now().Format(time.RFC3339),
+	}
+	saved, err := s.settings.Update(func(current *settings.Settings) {
+		current.APIKeys = append(current.APIKeys, key)
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.applyWebConfig(saved)
+	return &key, nil
+}
+
+// UpdateAPIKey 修改名称、权限和计算机范围。
+func (s *HyperVService) UpdateAPIKey(request APIKeyRequest) (*settings.APIKey, error) {
+	if strings.TrimSpace(request.ID) == "" {
+		return nil, errors.New("API Key ID 不能为空")
+	}
+	if err := s.validateAPIKeyRequest(request); err != nil {
+		return nil, err
+	}
+	var updated settings.APIKey
+	found := false
+	saved, err := s.settings.Update(func(current *settings.Settings) {
+		for i := range current.APIKeys {
+			if current.APIKeys[i].ID != request.ID {
+				continue
+			}
+			current.APIKeys[i].Name = strings.TrimSpace(request.Name)
+			current.APIKeys[i].Permission = request.Permission
+			current.APIKeys[i].HostIDs = request.HostIDs
+			updated = current.APIKeys[i]
+			found = true
+			return
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New("API Key 不存在")
+	}
+	s.applyWebConfig(saved)
+	return &updated, nil
+}
+
+// DeleteAPIKey 删除 API Key。
+func (s *HyperVService) DeleteAPIKey(id string) error {
+	found := false
+	saved, err := s.settings.Update(func(current *settings.Settings) {
+		keys := make([]settings.APIKey, 0, len(current.APIKeys))
+		for _, key := range current.APIKeys {
+			if key.ID == id {
+				found = true
+				continue
+			}
+			keys = append(keys, key)
+		}
+		current.APIKeys = keys
+	})
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("API Key 不存在")
+	}
+	s.applyWebConfig(saved)
+	return nil
+}
+
+// RegenerateAPIKeyToken 重新生成 API Key 的 Token。
+func (s *HyperVService) RegenerateAPIKeyToken(id string) (*settings.APIKey, error) {
+	var updated settings.APIKey
+	found := false
+	saved, err := s.settings.Update(func(current *settings.Settings) {
+		for i := range current.APIKeys {
+			if current.APIKeys[i].ID != id {
+				continue
+			}
+			current.APIKeys[i].Token = randomHex(16)
+			updated = current.APIKeys[i]
+			found = true
+			return
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New("API Key 不存在")
+	}
+	s.applyWebConfig(saved)
+	return &updated, nil
+}
+
+func (s *HyperVService) validateAPIKeyRequest(request APIKeyRequest) error {
+	if strings.TrimSpace(request.Name) == "" {
+		return errors.New("请输入 API Key 名称")
+	}
+	switch request.Permission {
+	case settings.PermissionRead, settings.PermissionWrite, settings.PermissionAdmin:
+	default:
+		return errors.New("权限必须是 read、write 或 admin")
+	}
+	for _, id := range request.HostIDs {
+		if _, err := s.hostStore.Get(id); err != nil {
+			return fmt.Errorf("API Key 允许的计算机不存在: %s", id)
+		}
+	}
+	return nil
+}
+
+func (s *HyperVService) applyWebConfig(value settings.Settings) {
+	if s.api == nil {
+		return
+	}
+	cfg := httpapi.Config{
+		Enabled:       value.Web.Enabled,
+		ListenAddress: value.Web.ListenAddress,
+		Port:          value.Web.Port,
+		Username:      value.Web.Username,
+		Password:      value.Web.Password,
+		APIKeys:       value.APIKeys,
+	}
+	// 延迟重启，避免当前 HTTP 请求被 Shutdown 截断。
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		s.api.Apply(cfg)
+	}()
+}
+
+// applyTunnel 按新设置重启内置 frp 客户端。
+func (s *HyperVService) applyTunnel(value settings.Settings) {
+	go func() {
+		// 与网页控制台重启错开，保证本地端口先就绪。
+		time.Sleep(500 * time.Millisecond)
+		s.tunnel.Apply(tunnel.ConfigFromSettings(value))
+	}()
+}
+
+// GetTunnelStatus 返回内网穿透运行状态。
+func (s *HyperVService) GetTunnelStatus() tunnel.Status {
+	return s.tunnel.Status()
+}
+
+// RestartTunnel 按当前设置重新连接 frps，返回即时状态。
+func (s *HyperVService) RestartTunnel() tunnel.Status {
+	current := s.settings.Get()
+	return s.tunnel.Apply(tunnel.ConfigFromSettings(current))
+}
+
+func randomHex(size int) string {
+	buf := make([]byte, size)
+	_, _ = rand.Read(buf)
+	return hex.EncodeToString(buf)
 }
 
 // GetAPIStatus 返回 HTTP API 状态。
@@ -883,6 +1292,11 @@ func (s *HyperVService) GetAPIStatus() httpapi.Status {
 
 // PickFile 打开文件选择器，返回绝对路径；取消时返回空字符串。
 func (s *HyperVService) PickFile(title string, filterName string, filterPattern string) (string, error) {
+	return s.PickFileIn(title, filterName, filterPattern, "")
+}
+
+// PickFileIn 与 PickFile 相同，但会从指定目录开始浏览。
+func (s *HyperVService) PickFileIn(title string, filterName string, filterPattern string, directory string) (string, error) {
 	if s.isRemote() {
 		return "", errors.New("当前连接的是远程主机，请在输入框中手动填写远程主机上的绝对路径")
 	}
@@ -894,11 +1308,19 @@ func (s *HyperVService) PickFile(title string, filterName string, filterPattern 
 	if filterName != "" && filterPattern != "" {
 		dialog.AddFilter(filterName, filterPattern)
 	}
+	if strings.TrimSpace(directory) != "" {
+		dialog.SetDirectory(directory)
+	}
 	return dialog.PromptForSingleSelection()
 }
 
 // PickDirectory 打开目录选择器，返回绝对路径；取消时返回空字符串。
 func (s *HyperVService) PickDirectory(title string) (string, error) {
+	return s.PickDirectoryIn(title, "")
+}
+
+// PickDirectoryIn 与 PickDirectory 相同，但会从指定目录开始浏览。
+func (s *HyperVService) PickDirectoryIn(title string, directory string) (string, error) {
 	if s.isRemote() {
 		return "", errors.New("当前连接的是远程主机，请在输入框中手动填写远程主机上的绝对路径")
 	}
@@ -906,12 +1328,15 @@ func (s *HyperVService) PickDirectory(title string) (string, error) {
 	if app == nil {
 		return "", errors.New("应用尚未启动")
 	}
-	return app.Dialog.OpenFile().
+	dialog := app.Dialog.OpenFile().
 		SetTitle(title).
 		CanChooseFiles(false).
 		CanChooseDirectories(true).
-		CanCreateDirectories(true).
-		PromptForSingleSelection()
+		CanCreateDirectories(true)
+	if strings.TrimSpace(directory) != "" {
+		dialog.SetDirectory(directory)
+	}
+	return dialog.PromptForSingleSelection()
 }
 
 // RestartElevated 以管理员身份重新启动应用。

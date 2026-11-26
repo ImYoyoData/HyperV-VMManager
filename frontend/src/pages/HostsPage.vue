@@ -10,24 +10,37 @@ import {
 } from "@vicons/ionicons5";
 import PageHeader from "../components/PageHeader.vue";
 import HelpTip from "../components/HelpTip.vue";
-import { errorMessage } from "../api";
+import ConnectHelpModal from "../components/ConnectHelpModal.vue";
+import { errorMessage, isWebMode, HyperVService } from "../api";
 import type { HostItem, HostRequest } from "../api";
 import { useHostsStore } from "../stores/hosts";
+import { useAppStore } from "../stores/app";
+import { useVMStore } from "../stores/vms";
+import { useTaskStore } from "../stores/tasks";
+import { useSetupStore } from "../stores/setup";
 import { formatDateTime } from "../utils/format";
 
 const router = useRouter();
 const message = useMessage();
 const dialog = useDialog();
 const hosts = useHostsStore();
+const app = useAppStore();
+const vmStore = useVMStore();
+const taskStore = useTaskStore();
+const setup = useSetupStore();
 
 const showForm = ref(false);
 const saving = ref(false);
 const editing = ref<HostItem | null>(null);
+const formType = ref<"local" | "remote">("remote");
 
 const showConnect = ref(false);
 const connectTarget = ref<HostItem | null>(null);
 const connectPassword = ref("");
+const rememberPassword = ref(true);
 const connecting = ref(false);
+const connectError = ref("");
+const showConnectHelp = ref(false);
 
 const form = reactive({
   id: "",
@@ -46,7 +59,8 @@ const authOptions = [
 ];
 
 const isEditing = computed(() => !!editing.value);
-const formTitle = computed(() => (isEditing.value ? "编辑计算机" : "添加远程计算机"));
+const formTitle = computed(() => (isEditing.value ? "编辑计算机" : "添加计算机"));
+const hasLocal = computed(() => hosts.items.some((item) => item.isLocal));
 
 watch(
   () => form.useSSL,
@@ -67,13 +81,19 @@ function resetForm() {
   form.authentication = "Default";
 }
 
-function openAdd() {
+async function openAdd() {
+  if (hosts.items.length === 0) {
+    await hosts.fetch();
+  }
   resetForm();
+  // 本机已经存在时默认并只能选择远程；本机不存在时才默认本地。
+  formType.value = hasLocal.value ? "remote" : "local";
   showForm.value = true;
 }
 
 function openEdit(item: HostItem) {
   resetForm();
+  formType.value = "remote";
   editing.value = item;
   form.id = item.id;
   form.name = item.name;
@@ -142,6 +162,19 @@ async function activate(item: HostItem) {
     }
     return;
   }
+  if (item.passwordSaved) {
+    // 已经记住密码：直接连接，不再弹出密码框。
+    try {
+      await hosts.connect(item.id, "");
+      message.success(`已连接 ${item.name}`);
+      await afterSwitch();
+    } catch (err) {
+      connectTarget.value = item;
+      connectError.value = errorMessage(err);
+      showConnectHelp.value = true;
+    }
+    return;
+  }
   openConnect(item);
 }
 
@@ -168,7 +201,19 @@ async function addLocal() {
 function openConnect(item: HostItem) {
   connectTarget.value = item;
   connectPassword.value = "";
+  rememberPassword.value = true;
+  connectError.value = "";
   showConnect.value = true;
+}
+
+async function saveLocal() {
+  if (hasLocal.value) {
+    message.info("本机已添加且只能存在一个，请选择“远程计算机”");
+    formType.value = "remote";
+    return;
+  }
+  await addLocal();
+  showForm.value = false;
 }
 
 async function doConnect() {
@@ -179,14 +224,17 @@ async function doConnect() {
     return;
   }
   connecting.value = true;
+  connectError.value = "";
   try {
-    await hosts.connect(item.id, connectPassword.value);
+    await hosts.connect(item.id, connectPassword.value, rememberPassword.value);
     message.success(`已连接 ${item.name}`);
     showConnect.value = false;
     connectPassword.value = "";
     await afterSwitch();
   } catch (err) {
-    message.error(errorMessage(err));
+    connectError.value = errorMessage(err);
+    // 连接失败时直接给出可复制的修复命令，而不是只弹一条报错。
+    showConnectHelp.value = true;
   } finally {
     connecting.value = false;
   }
@@ -194,6 +242,12 @@ async function doConnect() {
 
 async function afterSwitch() {
   await hosts.fetch();
+  if (isWebMode) {
+    await app.init();
+    await vmStore.fetch();
+    await taskStore.fetch();
+    await setup.check();
+  }
   await router.push("/vms");
 }
 
@@ -207,6 +261,24 @@ function confirmRemove(item: HostItem) {
       try {
         await hosts.remove(item.id);
         message.success("计算机配置已删除");
+      } catch (err) {
+        message.error(errorMessage(err));
+      }
+    },
+  });
+}
+
+function forgetPassword(item: HostItem) {
+  dialog.warning({
+    title: "忘记已保存的密码",
+    content: `将删除 Windows 凭据管理器中「${item.address || item.name}」的密码。删除后需要重新输入密码才能连接。`,
+    positiveText: "删除密码",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      try {
+        await HyperVService.ForgetHostCredential(item.id);
+        await hosts.fetch();
+        message.success("已删除保存的密码");
       } catch (err) {
         message.error(errorMessage(err));
       }
@@ -236,17 +308,11 @@ onMounted(() => {
       </template>
       刷新
     </n-button>
-    <n-button size="small" @click="addLocal">
-      <template #icon>
-        <n-icon :component="DesktopOutline" />
-      </template>
-      添加本地
-    </n-button>
     <n-button size="small" type="primary" @click="openAdd">
       <template #icon>
         <n-icon :component="AddCircleOutline" />
       </template>
-      添加远程计算机
+      添加计算机
     </n-button>
   </PageHeader>
 
@@ -270,6 +336,7 @@ onMounted(() => {
           <div class="host-address mono-text">{{ hostAddress(item) }}</div>
         </div>
         <div class="host-badges">
+          <n-tag v-if="item.passwordSaved" size="tiny" :bordered="false">已记住密码</n-tag>
           <n-tag v-if="item.active" size="tiny" type="success" :bordered="false">当前主机</n-tag>
           <n-tag v-else-if="item.connected" size="tiny" type="info" :bordered="false">已连接</n-tag>
         </div>
@@ -318,6 +385,14 @@ onMounted(() => {
         >
           删除
         </n-button>
+        <n-button
+          v-if="item.passwordSaved"
+          size="small"
+          quaternary
+          @click="forgetPassword(item)"
+        >
+          忘记密码
+        </n-button>
       </div>
     </div>
   </div>
@@ -333,13 +408,23 @@ onMounted(() => {
       <li>创建、克隆时填写的镜像、ISO、存储目录都是 <strong>远程主机上的绝对路径</strong>，远程模式下不能使用本机文件选择器。</li>
     </ul>
     <n-collapse style="margin-top: 10px">
-      <n-collapse-item title="远程主机启用 WinRM 的 PowerShell 命令" name="winrm">
+      <n-collapse-item title="远程主机启用 WinRM（在远程主机上执行）" name="winrm">
         <pre class="code-block"># 在远程 Hyper-V 主机上以管理员身份运行
 Enable-PSRemoting -Force
-Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
-# 或仅允许管理端 IP：
-# Set-Item WSMan:\localhost\Client\TrustedHosts -Value "192.168.1.10" -Force
-Restart-Service WinRM</pre>
+Enable-NetFirewallRule -DisplayGroup "Windows 远程管理"</pre>
+      </n-collapse-item>
+      <n-collapse-item title="工作组 / IP 连接（在本机执行）" name="trusted">
+        <pre class="code-block"># 在工作组环境用 IP 连接时，必须让本机信任目标主机
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value "192.168.0.16" -Force
+Restart-Service WinRM
+
+# 需要 CredSSP 双跳认证时：
+Enable-WSManCredSSP -Role Client -DelegateComputer "192.168.0.16" -Force
+# 并在远程主机执行：Enable-WSManCredSSP -Role Server -Force</pre>
+        <div class="help-text" style="margin-top: 8px">
+          连接失败时可以直接点击弹窗里的“一键修复本机”，自动完成 TrustedHosts 配置；
+          其余命令也可以直接复制到对应机器的管理员 PowerShell 中执行。
+        </div>
       </n-collapse-item>
       <n-collapse-item title="密码保存说明" name="password">
         <div class="help-text">
@@ -350,50 +435,88 @@ Restart-Service WinRM</pre>
     </n-collapse>
   </div>
 
-  <n-modal v-model:show="showForm" preset="card" :title="formTitle" style="width: 560px">
+  <n-modal v-model:show="showForm" preset="card" :title="formTitle" style="width: 580px">
     <n-form label-placement="top" size="small">
-      <div class="form-grid">
-        <n-form-item label="显示名称">
-          <n-input v-model:value="form.name" placeholder="例如 实验室 Hyper-V" />
-        </n-form-item>
-        <n-form-item>
-          <template #label>
-            计算机名 / IP
-            <HelpTip>
-              <p>填写远程 Hyper-V 主机的 DNS 名称或 IP 地址。</p>
-              <p>管理端必须能够通过 WinRM 访问该地址，并且账户具备 Hyper-V 管理权限。</p>
-            </HelpTip>
-          </template>
-          <n-input v-model:value="form.address" placeholder="例如 hyperv-lab 或 192.168.1.20" />
-        </n-form-item>
-        <n-form-item>
-          <template #label>
-            WinRM 端口
-            <HelpTip>
-              <p>HTTP 默认 5985，HTTPS 默认 5986。</p>
-              <p>如果远程主机修改过 WinRM 监听端口，请填写实际端口。</p>
-            </HelpTip>
-          </template>
-          <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 100%" />
-        </n-form-item>
-        <n-form-item label="使用 HTTPS">
-          <n-switch v-model:value="form.useSSL" />
-        </n-form-item>
-        <n-form-item label="用户名（可选）">
-          <n-input v-model:value="form.username" placeholder="留空使用当前 Windows 凭据；例如 LAB\\Administrator" />
-        </n-form-item>
-        <n-form-item label="认证方式">
-          <n-select v-model:value="form.authentication" :options="authOptions" />
-        </n-form-item>
-      </div>
-      <n-alert type="info" :show-icon="true">
-        保存配置不会立即连接，也不会保存密码。添加后点击“连接”验证 WinRM 和 Hyper-V 权限。
-      </n-alert>
+      <n-form-item v-if="!isEditing" label="添加类型">
+        <div class="type-picker">
+          <n-radio-group v-model:value="formType">
+            <n-radio-button value="local" :disabled="hasLocal">本机</n-radio-button>
+            <n-radio-button value="remote">远程计算机</n-radio-button>
+          </n-radio-group>
+          <div class="form-hint" style="margin-top: 6px">
+            <template v-if="hasLocal">
+              本机已经添加且只能存在一个；要切换本机请直接在列表中点击“切换到此主机”。
+              现在请添加远程计算机。
+            </template>
+            <template v-else>
+              默认使用本机。本机配置只会存在一个，也可以改为添加远程计算机。
+            </template>
+          </div>
+        </div>
+      </n-form-item>
+
+      <template v-if="formType === 'local' && !isEditing">
+        <n-alert type="info" :show-icon="true">
+          将使用正在运行管理助手的这台电脑作为当前主机。本机配置在应用启动时自动创建，不会重复添加。
+        </n-alert>
+      </template>
+
+      <template v-else>
+        <div class="form-grid">
+          <n-form-item label="显示名称">
+            <n-input v-model:value="form.name" placeholder="例如 实验室 Hyper-V" />
+          </n-form-item>
+          <n-form-item>
+            <template #label>
+              计算机名 / IP
+              <HelpTip>
+                <p>填写远程 Hyper-V 主机的 DNS 名称或 IP 地址。</p>
+                <p>管理端必须能够通过 WinRM 访问该地址，并且账户具备 Hyper-V 管理权限。</p>
+              </HelpTip>
+            </template>
+            <n-input v-model:value="form.address" placeholder="例如 hyperv-lab 或 192.168.1.20" />
+          </n-form-item>
+          <n-form-item>
+            <template #label>
+              WinRM 端口
+              <HelpTip>
+                <p>HTTP 默认 5985，HTTPS 默认 5986。</p>
+                <p>如果远程主机修改过 WinRM 监听端口，请填写实际端口。</p>
+              </HelpTip>
+            </template>
+            <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 100%" />
+          </n-form-item>
+          <n-form-item label="使用 HTTPS">
+            <n-switch v-model:value="form.useSSL" />
+          </n-form-item>
+          <n-form-item label="用户名（可选）">
+            <n-input v-model:value="form.username" placeholder="留空使用当前 Windows 凭据；例如 LAB\\Administrator" />
+          </n-form-item>
+          <n-form-item label="认证方式">
+            <n-select v-model:value="form.authentication" :options="authOptions" />
+          </n-form-item>
+        </div>
+        <n-alert type="info" :show-icon="true">
+          保存配置不会立即连接，也不会保存密码。添加后点击“连接”验证 WinRM 和 Hyper-V 权限；
+          连接失败时会自动给出可复制的修复命令。
+        </n-alert>
+      </template>
     </n-form>
     <template #footer>
       <n-space justify="end">
         <n-button size="small" @click="showForm = false">取消</n-button>
-        <n-button size="small" type="primary" :loading="saving" @click="saveHost">保存</n-button>
+        <n-button
+          v-if="!isEditing && formType === 'local'"
+          size="small"
+          type="primary"
+          :disabled="hasLocal"
+          @click="saveLocal"
+        >
+          使用本机
+        </n-button>
+        <n-button v-else size="small" type="primary" :loading="saving" @click="saveHost">
+          {{ isEditing ? "保存" : "添加" }}
+        </n-button>
       </n-space>
     </template>
   </n-modal>
@@ -416,14 +539,32 @@ Restart-Service WinRM</pre>
             @keyup.enter="doConnect"
           />
         </n-form-item>
+        <n-checkbox v-model:checked="rememberPassword">
+          记住密码（加密保存到 Windows 凭据管理器，下次直接连接）
+        </n-checkbox>
       </n-form>
-      <n-alert type="warning" :show-icon="true">
+      <n-alert v-if="connectError" type="error" :show-icon="true">
+        <div class="connect-error">{{ connectError }}</div>
+        <n-button
+          size="tiny"
+          type="warning"
+          ghost
+          style="margin-top: 8px"
+          @click="showConnectHelp = true"
+        >
+          查看解决方案 / 一键修复
+        </n-button>
+      </n-alert>
+      <n-alert v-else type="warning" :show-icon="true">
         密码只保存在内存中。连接会通过 WinRM 执行 <span class="mono-text">Get-VMHost</span>
-        验证权限，失败时请检查远程 WinRM、防火墙和 Hyper-V 管理权限。
+        验证权限；如果失败，会自动打开解决方案并给出可复制的修复命令。
       </n-alert>
     </div>
     <template #footer>
       <n-space justify="end">
+        <n-button v-if="connectTarget" size="small" quaternary @click="showConnectHelp = true">
+          连接遇到问题？
+        </n-button>
         <n-button size="small" @click="showConnect = false">取消</n-button>
         <n-button size="small" type="primary" :loading="connecting" @click="doConnect">
           连接
@@ -431,6 +572,12 @@ Restart-Service WinRM</pre>
       </n-space>
     </template>
   </n-modal>
+
+  <ConnectHelpModal
+    v-model:show="showConnectHelp"
+    :host="connectTarget"
+    :error="connectError"
+  />
 </template>
 
 <style scoped>
@@ -452,7 +599,7 @@ Restart-Service WinRM</pre>
 }
 
 .host-card.active {
-  border-color: #2c5d9c;
+  border-color: var(--border-strong);
   box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.12);
 }
 
@@ -467,8 +614,8 @@ Restart-Service WinRM</pre>
   height: 38px;
   flex: 0 0 38px;
   border-radius: 9px;
-  background: #1a2130;
-  color: #8fb6ff;
+  background: var(--icon-bg);
+  color: var(--icon-fg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -482,7 +629,7 @@ Restart-Service WinRM</pre>
 .host-name {
   font-size: 14px;
   font-weight: 600;
-  color: #eef1f7;
+  color: var(--text-strong);
 }
 
 .host-address {
@@ -512,7 +659,7 @@ Restart-Service WinRM</pre>
 }
 
 .host-meta-value {
-  color: #c8d0de;
+  color: var(--text-2);
   word-break: break-all;
 }
 
@@ -533,26 +680,26 @@ Restart-Service WinRM</pre>
   padding-left: 20px;
   font-size: 12px;
   line-height: 1.8;
-  color: #aeb8c9;
+  color: var(--text-3);
 }
 
 .help-list strong {
-  color: #eef1f7;
+  color: var(--text-strong);
 }
 
 .help-text {
   font-size: 12px;
   line-height: 1.75;
-  color: #aeb8c9;
+  color: var(--text-3);
 }
 
 .code-block {
   margin: 0;
   padding: 12px;
   border-radius: 8px;
-  background: #0b0d12;
+  background: var(--code-bg);
   border: 1px solid var(--border);
-  color: #b7c0d0;
+  color: var(--text-3);
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 11.5px;
   line-height: 1.7;
@@ -562,12 +709,24 @@ Restart-Service WinRM</pre>
 
 .connect-address {
   font-size: 12px;
-  color: #aeb8c9;
-  background: #10131a;
+  color: var(--text-3);
+  background: var(--input-bg);
   border: 1px solid var(--border-soft);
   border-radius: 7px;
   padding: 8px 10px;
   word-break: break-all;
+}
+
+.type-picker {
+  width: 100%;
+}
+
+.connect-error {
+  font-size: 11.5px;
+  line-height: 1.7;
+  max-height: 150px;
+  overflow-y: auto;
+  word-break: break-word;
 }
 
 @media (max-width: 1100px) {

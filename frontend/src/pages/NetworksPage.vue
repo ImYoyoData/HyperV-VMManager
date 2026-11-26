@@ -308,22 +308,22 @@ onMounted(() => {
   padding: 0 8px;
   border-radius: 6px;
   font-size: 11px;
-  background: #1c2130;
-  color: #aeb8c9;
+  background: var(--net-neutral-bg);
+  color: var(--net-neutral-fg);
 }
 
 .custom-tag[data-type="External"] {
-  background: #172a4a;
-  color: #8fb6ff;
+  background: var(--net-blue-bg);
+  color: var(--net-blue-fg);
 }
 
 .custom-tag[data-type="Internal"] {
-  background: #173039;
-  color: #74c7cf;
+  background: var(--net-cyan-bg);
+  color: var(--net-cyan-fg);
 }
 
 .custom-tag[data-type="Private"] {
-  background: #262230;
-  color: #b7a8d8;
+  background: var(--net-purple-bg);
+  color: var(--net-purple-fg);
 }
 </style>

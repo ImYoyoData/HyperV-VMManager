@@ -16,6 +16,19 @@ import * as settings$0 from "../settings/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as tasks$0 from "../tasks/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as tunnel$0 from "../tunnel/models.js";
+
+/**
+ * APIKeyRequest 是新增/编辑 API Key 的输入。
+ */
+export interface APIKeyRequest {
+    "id"?: string;
+    "name": string;
+    "permission": string;
+    "hostIDs"?: string[] | null;
+}
 
 /**
  * Bootstrap 是前端启动时一次性获取的聚合数据。
@@ -30,6 +43,7 @@ export interface Bootstrap {
     "isAdmin": boolean;
     "dataDir": string;
     "api": httpapi$0.Status;
+    "tunnel": tunnel$0.Status;
     "taskStats": tasks$0.Stats;
     "activeHost"?: hosts$0.Item | null;
     "appVersion": string;

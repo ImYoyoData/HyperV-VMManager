@@ -61,6 +61,15 @@ export interface DVDDrive {
 }
 
 /**
+ * DiskSpace 描述一个逻辑磁盘的容量。
+ */
+export interface DiskSpace {
+    "drive": string;
+    "totalBytes": number;
+    "freeBytes": number;
+}
+
+/**
  * EditRequest 只携带需要修改的字段，nil 表示保持原值。
  */
 export interface EditRequest {
@@ -149,10 +158,28 @@ export interface HardDrive {
 }
 
 /**
+ * HostCapacity 汇总主机的 CPU / 内存 / 磁盘分配情况。
+ */
+export interface HostCapacity {
+    "hostID": string;
+    "name": string;
+    "isLocal": boolean;
+    "logicalProcessors": number;
+    "allocatedCPU": number;
+    "availableCPU": number;
+    "totalMemoryMB": number;
+    "allocatedMemoryMB": number;
+    "reservedMemoryMB": number;
+    "availableMemoryMB": number;
+    "disks": DiskSpace[] | null;
+}
+
+/**
  * HostInfo 描述 Hyper-V 主机与增强会话状态。
  */
 export interface HostInfo {
     "computerName": string;
+    "userName": string;
     "osName": string;
     "hyperVVersion": string;
     "logicalProcessors": number;

@@ -40,6 +40,7 @@ type Item struct {
 	IsLocal         bool   `json:"isLocal"`
 	Connected       bool   `json:"connected"`
 	Active          bool   `json:"active"`
+	PasswordSaved   bool   `json:"passwordSaved"`
 	LastConnectedAt string `json:"lastConnectedAt,omitempty"`
 }
 

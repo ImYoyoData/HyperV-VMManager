@@ -3,5 +3,9 @@
 
 export type {
     APIConfig,
-    Settings
+    APIKey,
+    Settings,
+    TunnelConfig,
+    TunnelMapping,
+    WebConfig
 } from "./models.js";

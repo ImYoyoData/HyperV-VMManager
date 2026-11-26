@@ -5,8 +5,9 @@ import { useMessage } from "naive-ui";
 import { FolderOutline, AddCircleOutline, ServerOutline } from "@vicons/ionicons5";
 import PageHeader from "../components/PageHeader.vue";
 import HelpTip from "../components/HelpTip.vue";
+import HostConnectModal from "../components/HostConnectModal.vue";
 import { HyperVService, errorMessage } from "../api";
-import type { CreateRequest, VirtualSwitch } from "../api";
+import type { CreateRequest, HostItem, VirtualSwitch } from "../api";
 import { useAppStore } from "../stores/app";
 import { useTaskStore } from "../stores/tasks";
 import { useHostsStore } from "../stores/hosts";
@@ -27,7 +28,6 @@ const hostOptions = computed(() =>
   hosts.items.map((item) => ({
     label: `${item.name}${item.isLocal ? "（本机）" : "（" + item.address + "）"}${item.connected ? "" : " · 未连接"}`,
     value: item.id,
-    disabled: !item.connected,
   }))
 );
 
@@ -35,6 +35,9 @@ const step = ref(0);
 const submitting = ref(false);
 const switches = ref<VirtualSwitch[]>([]);
 const defaultsApplied = ref(false);
+const showHostConnect = ref(false);
+const connectTarget = ref<HostItem | null>(null);
+const pendingSubmit = ref(false);
 
 const form = reactive({
   name: "",
@@ -157,7 +160,10 @@ async function browseDirectory() {
     return;
   }
   try {
-    const dir = await HyperVService.PickDirectory("选择虚拟机存储目录");
+    const dir = await HyperVService.PickDirectoryIn(
+      "选择虚拟机存储目录",
+      form.directory || app.settings?.storageRoot || ""
+    );
     if (dir) form.directory = dir;
   } catch (err) {
     message.error(errorMessage(err));
@@ -170,7 +176,12 @@ async function browseImage() {
     return;
   }
   try {
-    const file = await HyperVService.PickFile("选择系统镜像", "虚拟硬盘", "*.vhdx;*.vhd");
+    const file = await HyperVService.PickFileIn(
+      "选择系统镜像",
+      "虚拟硬盘",
+      "*.vhdx;*.vhd",
+      form.directory || app.settings?.storageRoot || ""
+    );
     if (file) form.imagePath = file;
   } catch (err) {
     message.error(errorMessage(err));
@@ -183,7 +194,12 @@ async function browseISO() {
     return;
   }
   try {
-    const file = await HyperVService.PickFile("选择安装 ISO", "镜像文件", "*.iso");
+    const file = await HyperVService.PickFileIn(
+      "选择安装 ISO",
+      "镜像文件",
+      "*.iso",
+      form.directory || app.settings?.storageRoot || ""
+    );
     if (file) form.isoPath = file;
   } catch (err) {
     message.error(errorMessage(err));
@@ -205,7 +221,8 @@ async function submit() {
     return;
   }
   if (!host.connected) {
-    message.warning("目标计算机尚未连接，请先到“计算机”页面连接");
+    pendingSubmit.value = true;
+    await ensureHostConnected(host);
     return;
   }
 
@@ -257,7 +274,36 @@ async function loadSwitches() {
 async function onTargetHostChange(value: string) {
   targetHostID.value = value;
   form.switchName = "";
+  const host = hosts.items.find((item) => item.id === value);
+  await ensureHostConnected(host);
   await loadSwitches();
+}
+
+async function ensureHostConnected(host: HostItem | undefined): Promise<boolean> {
+  if (!host) return false;
+  if (host.isLocal || host.connected) return true;
+  if (host.passwordSaved) {
+    try {
+      await hosts.connect(host.id, "");
+      message.success(`已连接 ${host.name}`);
+      await hosts.fetch();
+      return true;
+    } catch {
+      // 保存的密码失效时，继续弹出密码框让用户重新输入。
+    }
+  }
+  connectTarget.value = host;
+  showHostConnect.value = true;
+  return false;
+}
+
+async function onHostConnected(host: HostItem) {
+  await hosts.fetch();
+  await loadSwitches();
+  if (pendingSubmit.value && host.id === targetHostID.value) {
+    pendingSubmit.value = false;
+    await submit();
+  }
 }
 
 onMounted(async () => {
@@ -567,6 +613,11 @@ onMounted(async () => {
       </div>
     </div>
   </div>
+  <HostConnectModal
+    v-model:show="showHostConnect"
+    :host="connectTarget"
+    @connected="onHostConnected"
+  />
 </template>
 
 <style scoped>

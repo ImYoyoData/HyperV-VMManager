@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { useMessage } from "naive-ui";
 import {
   ConstructOutline,
@@ -18,6 +19,7 @@ import { formatMB } from "../utils/format";
 
 const app = useAppStore();
 const message = useMessage();
+const router = useRouter();
 
 const session = ref<EnhancedSessionStatus | null>(null);
 const sessionLoading = ref(false);
@@ -36,7 +38,7 @@ const tools = [
   {
     key: "switch-manager",
     label: "虚拟交换机管理器",
-    hint: "网络与桥接配置",
+    hint: "在应用内管理交换机与桥接",
     icon: GitNetworkOutline,
   },
   {
@@ -92,6 +94,10 @@ async function toggleSession(enabled: boolean) {
 }
 
 async function openTool(key: string) {
+  if (key === "switch-manager") {
+    await router.push("/network");
+    return;
+  }
   try {
     await HyperVService.OpenTool(key);
   } catch (err) {

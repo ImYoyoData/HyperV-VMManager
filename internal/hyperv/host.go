@@ -23,6 +23,7 @@ $enhanced = $false
 if ($vh) { $enhanced = [bool]$vh.EnableEnhancedSessionMode }
 Write-HvResult ([ordered]@{
   computerName = "$env:COMPUTERNAME"
+  userName = "$env:USERNAME"
   osName = "$($os.Caption) $($os.Version)"
   hyperVVersion = "$($module.Version)"
   logicalProcessors = [int]$cs.NumberOfLogicalProcessors

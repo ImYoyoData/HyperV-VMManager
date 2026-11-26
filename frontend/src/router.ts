@@ -4,6 +4,12 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     {
+      path: "/login",
+      name: "login",
+      component: () => import("./pages/LoginPage.vue"),
+      meta: { title: "登录", public: true },
+    },
+    {
       path: "/",
       name: "dashboard",
       component: () => import("./pages/DashboardPage.vue"),

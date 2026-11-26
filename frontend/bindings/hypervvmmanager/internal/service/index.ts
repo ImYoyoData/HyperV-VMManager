@@ -7,5 +7,6 @@ export {
 };
 
 export type {
+    APIKeyRequest,
     Bootstrap
 } from "./models.js";

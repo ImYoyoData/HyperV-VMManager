@@ -427,23 +427,23 @@ onMounted(() => {
   padding: 18px 20px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: #12151c;
+  background: var(--surface-inset);
   margin-bottom: 14px;
 }
 
 .setup-hero.success {
-  border-color: #1f4a37;
-  background: #101a16;
+  border-color: var(--ok-border);
+  background: var(--ok-surface);
 }
 
 .setup-hero.warning {
-  border-color: #4a3a1b;
-  background: #19160f;
+  border-color: var(--amber-border);
+  background: var(--amber-surface);
 }
 
 .setup-hero.danger {
-  border-color: #4d2525;
-  background: #1b1113;
+  border-color: var(--err-border);
+  background: var(--err-surface);
 }
 
 .setup-hero-icon {
@@ -454,23 +454,23 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #1a1f2b;
-  color: #aab4c6;
+  background: var(--surface-raised);
+  color: var(--text-3);
 }
 
 .setup-hero.success .setup-hero-icon {
-  background: #123526;
-  color: #49c78b;
+  background: var(--ok-bg);
+  color: var(--ok-fg);
 }
 
 .setup-hero.warning .setup-hero-icon {
-  background: #33280f;
-  color: #e0a95e;
+  background: var(--amber-bg);
+  color: var(--amber-fg);
 }
 
 .setup-hero.danger .setup-hero-icon {
-  background: #3a181a;
-  color: #ef6464;
+  background: var(--err-bg);
+  color: var(--err-fg);
 }
 
 .setup-hero-text {
@@ -481,18 +481,18 @@ onMounted(() => {
 .setup-hero-title {
   font-size: 16px;
   font-weight: 600;
-  color: #f1f4fa;
+  color: var(--text-strong);
 }
 
 .setup-hero-desc {
   font-size: 12px;
-  color: #97a1b4;
+  color: var(--text-3);
   margin-top: 3px;
   line-height: 1.6;
 }
 
 .device-card {
-  background: #11141b;
+  background: var(--surface-inset);
   border: 1px solid var(--border-soft);
   border-radius: 10px;
   padding: 16px 18px;
@@ -517,24 +517,24 @@ onMounted(() => {
 }
 
 .check-item.status-error {
-  border-color: #3d2427;
+  border-color: var(--hero-border);
 }
 
 .check-icon {
   margin-top: 1px;
-  color: #7f889b;
+  color: var(--muted);
 }
 
 .check-icon.icon-ok {
-  color: #49c78b;
+  color: var(--ok-fg);
 }
 
 .check-icon.icon-warn {
-  color: #e0a95e;
+  color: var(--amber-fg);
 }
 
 .check-icon.icon-error {
-  color: #ef6464;
+  color: var(--err-fg);
 }
 
 .check-body {
@@ -551,12 +551,12 @@ onMounted(() => {
 .check-title {
   font-size: 13px;
   font-weight: 500;
-  color: #e8ecf4;
+  color: var(--text-1);
 }
 
 .check-detail {
   font-size: 12px;
-  color: #929cb0;
+  color: var(--text-3);
   margin-top: 4px;
   line-height: 1.65;
   word-break: break-word;
@@ -577,17 +577,17 @@ onMounted(() => {
   padding-left: 20px;
   font-size: 12.5px;
   line-height: 1.85;
-  color: #b5bfd0;
+  color: var(--text-3);
 }
 
 .tutorial-steps strong {
-  color: #eef1f7;
+  color: var(--text-strong);
 }
 
 .tutorial-paragraph {
   font-size: 12.5px;
   line-height: 1.8;
-  color: #b5bfd0;
+  color: var(--text-3);
   margin: 0 0 10px;
 }
 

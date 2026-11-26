@@ -19,9 +19,11 @@ import {
 import PageHeader from "../components/PageHeader.vue";
 import HelpTip from "../components/HelpTip.vue";
 import VmStateTag from "../components/VmStateTag.vue";
+import ConnectHelpModal from "../components/ConnectHelpModal.vue";
 import { HyperVService, errorMessage } from "../api";
-import type { EditRequest, VM, VirtualSwitch } from "../api";
+import type { EditRequest, HostItem, VM, VirtualSwitch } from "../api";
 import { useAppStore } from "../stores/app";
+import { useHostsStore } from "../stores/hosts";
 import { useTaskStore } from "../stores/tasks";
 import { useVMStore } from "../stores/vms";
 import {
@@ -36,11 +38,189 @@ const message = useMessage();
 const app = useAppStore();
 const vmStore = useVMStore();
 const taskStore = useTaskStore();
+const hosts = useHostsStore();
 
 const search = ref("");
 const stateFilter = ref<string | null>(null);
 const autoRefresh = ref(true);
 const switches = ref<VirtualSwitch[]>([]);
+
+const hostSelectValue = ref("");
+const showHostConnect = ref(false);
+const hostConnectTarget = ref<HostItem | null>(null);
+const hostPassword = ref("");
+const hostRemember = ref(true);
+const hostConnecting = ref(false);
+const hostConnectError = ref("");
+const showHostHelp = ref(false);
+
+const hostOptions = computed(() =>
+  hosts.items.map((item) => ({
+    label: `${item.name}${item.isLocal ? "（本机）" : "（" + item.address + "）"}${
+      item.connected || item.isLocal ? "" : " · 未连接"
+    }`,
+    value: item.id,
+  }))
+);
+
+const activeIsRemote = computed(() => !!app.activeHost && !app.activeHost.isLocal);
+
+watch(
+  () => app.activeHost?.id,
+  (id) => {
+    if (id) hostSelectValue.value = id;
+  },
+  { immediate: true }
+);
+
+async function afterHostSwitch() {
+  await app.init();
+  await fetchSwitches();
+  await vmStore.fetch();
+  void taskStore.fetch();
+}
+
+async function onHostChange(id: string) {
+  const host = hosts.items.find((item) => item.id === id);
+  if (!host || host.active) return;
+  hostConnectError.value = "";
+  if (host.isLocal) {
+    try {
+      await hosts.connect(host.id, "");
+      await afterHostSwitch();
+    } catch (err) {
+      message.error(errorMessage(err));
+      hostSelectValue.value = app.activeHost?.id ?? "";
+    }
+    return;
+  }
+  if (host.connected) {
+    try {
+      await hosts.setActive(host.id);
+      await afterHostSwitch();
+    } catch (err) {
+      message.error(errorMessage(err));
+      hostSelectValue.value = app.activeHost?.id ?? "";
+    }
+    return;
+  }
+  if (host.passwordSaved) {
+    hostConnecting.value = true;
+    try {
+      await hosts.connect(host.id, "", true);
+      await afterHostSwitch();
+    } catch (err) {
+      hostConnectTarget.value = host;
+      hostConnectError.value = errorMessage(err);
+      showHostHelp.value = true;
+      hostSelectValue.value = app.activeHost?.id ?? "";
+    } finally {
+      hostConnecting.value = false;
+    }
+    return;
+  }
+  hostConnectTarget.value = host;
+  hostPassword.value = "";
+  hostRemember.value = true;
+  showHostConnect.value = true;
+}
+
+function cancelHostConnect() {
+  showHostConnect.value = false;
+  hostSelectValue.value = app.activeHost?.id ?? "";
+}
+
+async function doHostConnect() {
+  const host = hostConnectTarget.value;
+  if (!host) return;
+  if (host.username && !hostPassword.value) {
+    message.warning("请输入远程计算机密码");
+    return;
+  }
+  hostConnecting.value = true;
+  hostConnectError.value = "";
+  try {
+    await hosts.connect(host.id, hostPassword.value, hostRemember.value);
+    showHostConnect.value = false;
+    await afterHostSwitch();
+  } catch (err) {
+    hostConnectError.value = errorMessage(err);
+    showHostHelp.value = true;
+    hostSelectValue.value = app.activeHost?.id ?? "";
+  } finally {
+    hostConnecting.value = false;
+  }
+}
+
+// ---------- VMConnect 凭据 ----------
+
+const showConsole = ref(false);
+const consoleTarget = ref<VM | null>(null);
+const consoleUser = ref("");
+const consolePassword = ref("");
+const consoleSaveCred = ref(true);
+const consoleLoading = ref(false);
+
+function defaultConsoleUser(): string {
+  const host = app.activeHost;
+  if (!host) return "";
+  if (host.username && !host.username.includes("@")) return host.username;
+  if (app.hostInfo?.computerName && app.hostInfo?.userName) {
+    return `${app.hostInfo.computerName}\\${app.hostInfo.userName}`;
+  }
+  return host.username || "";
+}
+
+async function openConsole(vm: VM) {
+  const host = app.activeHost;
+  if (!host || host.isLocal) {
+    try {
+      await HyperVService.ConnectVM(vm.name);
+    } catch (err) {
+      message.error(errorMessage(err));
+    }
+    return;
+  }
+  consoleTarget.value = vm;
+  consoleUser.value = defaultConsoleUser();
+  consolePassword.value = hosts.passwords[host.id] ?? "";
+  // Windows 凭据管理器里已经有这台主机的密码时，直接打开即可，
+  // 不需要再要求输入密码；需要更新时用户可以勾选保存并输入新密码。
+  consoleSaveCred.value = !host.passwordSaved && !hosts.passwords[host.id];
+  showConsole.value = true;
+}
+
+async function submitConsole() {
+  const host = app.activeHost;
+  const vm = consoleTarget.value;
+  if (!host || !vm) return;
+  if (!consoleUser.value.trim()) {
+    message.warning("请输入远程主机用户名");
+    return;
+  }
+  if (consoleSaveCred.value && !consolePassword.value) {
+    message.warning("保存凭据需要填写密码；也可以取消勾选后直接打开控制台");
+    return;
+  }
+  consoleLoading.value = true;
+  try {
+    if (consoleSaveCred.value) {
+      await HyperVService.SaveHostCredential(
+        host.address,
+        consoleUser.value.trim(),
+        consolePassword.value
+      );
+      hosts.passwords[host.id] = consolePassword.value;
+    }
+    await HyperVService.ConnectVM(vm.name);
+    showConsole.value = false;
+    message.success("已打开 VMConnect 窗口");
+  } catch (err) {
+    message.error(errorMessage(err));
+  } finally {
+    consoleLoading.value = false;
+  }
+}
 
 const stateOptions = [
   { label: "全部状态", value: "" },
@@ -237,7 +417,7 @@ function actionOptions(vm: VM): DropdownOption[] {
 async function handleAction(key: string, vm: VM) {
   switch (key) {
     case "connect":
-      await connectVM(vm);
+      await openConsole(vm);
       return;
     case "edit":
       openEdit(vm);
@@ -247,14 +427,6 @@ async function handleAction(key: string, vm: VM) {
       return;
     default:
       await submitPower(vm, key);
-  }
-}
-
-async function connectVM(vm: VM) {
-  try {
-    await HyperVService.ConnectVM(vm.name);
-  } catch (err) {
-    message.error(errorMessage(err));
   }
 }
 
@@ -371,6 +543,7 @@ watch(
 );
 
 onMounted(() => {
+  void hosts.fetch();
   void vmStore.fetch();
   void fetchSwitches();
   setupAutoRefresh();
@@ -420,6 +593,14 @@ async function restartElevated() {
   </n-alert>
 
   <div class="toolbar">
+    <span class="cell-muted host-switch-label">计算机</span>
+    <n-select
+      :value="hostSelectValue"
+      :options="hostOptions"
+      :loading="hosts.loading"
+      style="width: 240px"
+      @update:value="onHostChange"
+    />
     <n-input v-model:value="search" placeholder="搜索虚拟机名称" clearable style="width: 220px">
       <template #prefix>
         <n-icon :component="SearchOutline" />
@@ -575,13 +756,106 @@ async function restartElevated() {
 
       <template #footer>
         <n-space justify="end">
-          <n-button size="small" @click="connectVM(selectedVM)">连接控制台</n-button>
+          <n-button size="small" @click="openConsole(selectedVM)">连接控制台</n-button>
           <n-button size="small" type="primary" @click="openEdit(selectedVM)">编辑配置</n-button>
           <n-button size="small" type="error" ghost @click="openDelete(selectedVM)">删除</n-button>
         </n-space>
       </template>
     </n-drawer-content>
   </n-drawer>
+
+  <n-modal
+    v-model:show="showHostConnect"
+    preset="card"
+    :title="`连接 ${hostConnectTarget?.name || ''}`"
+    style="width: 470px"
+  >
+    <div v-if="hostConnectTarget">
+      <div class="connect-address mono-text">
+        {{ hostConnectTarget.address }}:{{ hostConnectTarget.port }}
+      </div>
+      <n-form label-placement="top" size="small" style="margin-top: 12px">
+        <n-form-item label="Windows 密码">
+          <n-input
+            v-model:value="hostPassword"
+            type="password"
+            show-password-on="click"
+            :placeholder="hostConnectTarget.username ? '输入远程主机账户密码' : '留空使用当前 Windows 凭据'"
+            @keyup.enter="doHostConnect"
+          />
+        </n-form-item>
+        <n-checkbox v-model:checked="hostRemember">
+          记住密码（保存到 Windows 凭据管理器，下次直接连接）
+        </n-checkbox>
+      </n-form>
+      <n-alert v-if="hostConnectError" type="error" :show-icon="true" style="margin-top: 12px">
+        <div class="connect-error">{{ hostConnectError }}</div>
+        <n-button
+          size="tiny"
+          type="warning"
+          ghost
+          style="margin-top: 8px"
+          @click="showHostHelp = true"
+        >
+          查看解决方案 / 一键修复
+        </n-button>
+      </n-alert>
+      <n-alert v-else type="info" :show-icon="true" style="margin-top: 12px">
+        密码加密保存在 Windows 凭据管理器，VMConnect 与 Hyper-V 管理器也能复用；
+        下次可以直接连接，不需要再次输入。
+      </n-alert>
+    </div>
+    <template #footer>
+      <n-space justify="end">
+        <n-button size="small" @click="cancelHostConnect">取消</n-button>
+        <n-button size="small" type="primary" :loading="hostConnecting" @click="doHostConnect">
+          连接
+        </n-button>
+      </n-space>
+    </template>
+  </n-modal>
+
+  <n-modal v-model:show="showConsole" preset="card" title="打开虚拟机控制台" style="width: 560px">
+    <n-alert type="info" :show-icon="true" style="margin-bottom: 12px">
+      VMConnect 使用 Windows 身份验证。若远程主机使用 Microsoft 账户，请改用
+      「计算机名\本地用户名」格式（例如 DESKTOP-1649RDS\83844），否则会出现
+      0x8009030e「指定的登录会话不存在」错误。
+    </n-alert>
+    <n-form label-placement="top" size="small">
+      <n-form-item label="远程主机用户名">
+        <n-input v-model:value="consoleUser" placeholder="计算机名\用户名" />
+      </n-form-item>
+      <n-form-item label="密码">
+        <n-input
+          v-model:value="consolePassword"
+          type="password"
+          show-password-on="click"
+          placeholder="远程主机账户密码"
+        />
+      </n-form-item>
+      <n-checkbox v-model:checked="consoleSaveCred">
+        保存到 Windows 凭据管理器（推荐，修复 VMConnect 认证失败）
+      </n-checkbox>
+    </n-form>
+    <div class="form-hint" style="margin-top: 8px">
+      保存后会写入当前 Windows 用户的凭据管理器，仅用于连接这台远程主机；
+      取消勾选则只打开本次控制台。
+    </div>
+    <template #footer>
+      <n-space justify="end">
+        <n-button size="small" @click="showConsole = false">取消</n-button>
+        <n-button size="small" type="primary" :loading="consoleLoading" @click="submitConsole">
+          打开控制台
+        </n-button>
+      </n-space>
+    </template>
+  </n-modal>
+
+  <ConnectHelpModal
+    v-model:show="showHostHelp"
+    :host="hostConnectTarget"
+    :error="hostConnectError"
+  />
 
   <n-modal v-model:show="showEdit" preset="card" title="编辑虚拟机配置" style="width: 560px">
     <div v-if="editSource" class="edit-form">
@@ -695,7 +969,7 @@ async function restartElevated() {
 
 .detail-subtitle {
   font-size: 12px;
-  color: #cfd6e4;
+  color: var(--text-3);
   margin: 14px 0 8px;
 }
 
@@ -706,7 +980,29 @@ async function restartElevated() {
 .delete-target-name {
   font-size: 16px;
   font-weight: 600;
-  color: #f0f3f9;
+  color: var(--text-strong);
   margin-bottom: 4px;
+}
+
+.host-switch-label {
+  flex: 0 0 auto;
+}
+
+.connect-address {
+  font-size: 12px;
+  color: var(--text-3);
+  background: var(--input-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  padding: 8px 10px;
+  word-break: break-all;
+}
+
+.connect-error {
+  font-size: 11.5px;
+  line-height: 1.7;
+  max-height: 150px;
+  overflow-y: auto;
+  word-break: break-word;
 }
 </style>

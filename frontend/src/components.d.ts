@@ -12,7 +12,9 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AppShell: typeof import('./components/AppShell.vue')['default']
+    ConnectHelpModal: typeof import('./components/ConnectHelpModal.vue')['default']
     HelpTip: typeof import('./components/HelpTip.vue')['default']
+    HostConnectModal: typeof import('./components/HostConnectModal.vue')['default']
     NAlert: typeof import('naive-ui')['NAlert']
     NButton: typeof import('naive-ui')['NButton']
     NCheckbox: typeof import('naive-ui')['NCheckbox']
@@ -23,6 +25,7 @@ declare module 'vue' {
     NDescriptions: typeof import('naive-ui')['NDescriptions']
     NDescriptionsItem: typeof import('naive-ui')['NDescriptionsItem']
     NDialogProvider: typeof import('naive-ui')['NDialogProvider']
+    NDivider: typeof import('naive-ui')['NDivider']
     NDrawer: typeof import('naive-ui')['NDrawer']
     NDrawerContent: typeof import('naive-ui')['NDrawerContent']
     NForm: typeof import('naive-ui')['NForm']
@@ -51,6 +54,7 @@ declare module 'vue' {
     StatCard: typeof import('./components/StatCard.vue')['default']
     TaskKindTag: typeof import('./components/TaskKindTag.vue')['default']
     TaskStatusTag: typeof import('./components/TaskStatusTag.vue')['default']
+    TitleBar: typeof import('./components/TitleBar.vue')['default']
     VmStateTag: typeof import('./components/VmStateTag.vue')['default']
   }
 }

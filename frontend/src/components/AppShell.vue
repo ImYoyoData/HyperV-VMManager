@@ -17,12 +17,14 @@ import {
   ShieldCheckmarkOutline,
 } from "@vicons/ionicons5";
 import { TaskFinished } from "../../bindings/events";
-import { HyperVService, errorMessage } from "../api";
+import { HyperVService, errorMessage, isWebMode, webLogout, webMe } from "../api";
 import type { Task } from "../api";
 import { useAppStore } from "../stores/app";
 import { useVMStore } from "../stores/vms";
 import { useTaskStore } from "../stores/tasks";
 import { useSetupStore } from "../stores/setup";
+import TitleBar from "./TitleBar.vue";
+import { useThemeStore, type ThemeMode } from "../stores/theme";
 import {
   taskKindLabel,
   taskStatusLabel,
@@ -37,6 +39,7 @@ const app = useAppStore();
 const vmStore = useVMStore();
 const taskStore = useTaskStore();
 const setup = useSetupStore();
+const themeStore = useThemeStore();
 const initializing = ref(true);
 
 function renderIcon(icon: Component) {
@@ -136,22 +139,48 @@ function notifyTaskFinished(task: Task) {
 let offTaskFinished: (() => void) | undefined;
 let offHostChanged: (() => void) | undefined;
 
+function onUnauthorized() {
+  if (isWebMode) {
+    void router.replace("/login");
+  }
+}
+
+async function logout() {
+  await webLogout();
+  await router.replace("/login");
+}
+
 onMounted(async () => {
-  taskStore.bindEvents();
-  offTaskFinished = Events.On(TaskFinished, (event: { data: Task }) => {
-    if (event?.data) {
-      notifyTaskFinished(event.data);
+  if (isWebMode) {
+    try {
+      await webMe();
+    } catch {
+      await router.replace("/login");
+      return;
     }
-  });
-  offHostChanged = Events.On("host:changed", async () => {
-    await app.init();
-    await vmStore.fetch();
-    await taskStore.fetch();
-    await setup.check();
-  });
+  }
+
+  taskStore.bindEvents();
+  if (!isWebMode) {
+    offTaskFinished = Events.On(TaskFinished, (event: { data: Task }) => {
+      if (event?.data) {
+        notifyTaskFinished(event.data);
+      }
+    });
+    offHostChanged = Events.On("host:changed", async () => {
+      await app.init();
+      await vmStore.fetch();
+      await taskStore.fetch();
+      await setup.check();
+    });
+  }
+  window.addEventListener("hvvm:unauthorized", onUnauthorized);
 
   try {
     await app.init();
+    if (app.settings?.theme) {
+      themeStore.setMode(app.settings.theme as ThemeMode);
+    }
     await setup.check();
     if (!setup.ready && !setup.skipped && route.path !== "/setup") {
       await router.replace("/setup");
@@ -167,6 +196,8 @@ onMounted(async () => {
 onUnmounted(() => {
   offTaskFinished?.();
   offHostChanged?.();
+  taskStore.stopEvents();
+  window.removeEventListener("hvvm:unauthorized", onUnauthorized);
 });
 
 async function restartElevated() {
@@ -179,10 +210,12 @@ async function restartElevated() {
 </script>
 
 <template>
-  <div class="shell">
+  <div class="app-root">
+    <TitleBar v-if="!isWebMode" />
+    <div class="shell">
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <div class="brand-mark">Hv</div>
+        <img src="/logo.svg" class="brand-mark" alt="" />
         <div class="brand-text">
           <div class="brand-title">Hyper-V 管理助手</div>
           <div class="brand-subtitle">{{ app.hostName }}</div>
@@ -208,6 +241,9 @@ async function restartElevated() {
           v{{ app.appVersion || "0.1.0" }}
           <span v-if="app.wailsVersion"> · Wails {{ app.wailsVersion }}</span>
         </div>
+        <n-button v-if="isWebMode" size="tiny" quaternary style="margin-top: 8px" @click="logout">
+          退出登录
+        </n-button>
       </div>
     </aside>
 
@@ -264,8 +300,10 @@ async function restartElevated() {
       </div>
     </main>
 
+    </div>
+
     <div v-if="initializing" class="boot-screen">
-      <div class="boot-mark">Hv</div>
+      <img src="/logo.svg" class="boot-mark" alt="" />
       <div class="boot-title">正在检查运行环境</div>
       <div class="boot-desc">
         读取 Windows 版本、CPU 虚拟化、Hyper-V 组件与增强会话状态...
@@ -276,6 +314,20 @@ async function restartElevated() {
 </template>
 
 <style scoped>
+.app-root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+}
+
+.shell {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
 .boot-screen {
   position: fixed;
   inset: 0;
@@ -292,7 +344,7 @@ async function restartElevated() {
   width: 46px;
   height: 46px;
   border-radius: 12px;
-  background: #2f6fed;
+  background: var(--primary);
   color: #fff;
   font-weight: 700;
   font-size: 19px;
@@ -306,7 +358,7 @@ async function restartElevated() {
 .boot-title {
   font-size: 15px;
   font-weight: 600;
-  color: #eef1f7;
+  color: var(--text-strong);
 }
 
 .boot-desc {
@@ -327,9 +379,9 @@ async function restartElevated() {
   gap: 8px;
   padding: 8px 24px;
   border-bottom: 1px solid var(--border-soft);
-  background: #0d1015;
+  background: var(--surface-sunken);
   font-size: 12px;
-  color: #aeb8c9;
+  color: var(--text-3);
 }
 
 .host-bar-caption {
@@ -337,13 +389,13 @@ async function restartElevated() {
 }
 
 .host-bar-name {
-  color: #e8ecf4;
+  color: var(--text-1);
   font-weight: 500;
 }
 
 .host-bar-address {
   font-size: 11px;
-  color: #6f7a8d;
+  color: var(--muted);
 }
 
 .host-bar .spacer {

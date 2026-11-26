@@ -12,7 +12,9 @@ import (
 	"hypervvmmanager/internal/hosts"
 	"hypervvmmanager/internal/httpapi"
 	"hypervvmmanager/internal/hyperv"
+	"hypervvmmanager/internal/settings"
 	"hypervvmmanager/internal/tasks"
+	"hypervvmmanager/internal/tunnel"
 )
 
 type fakeBackend struct {
@@ -36,9 +38,11 @@ func (f *fakeBackend) ListHosts() ([]hosts.Item, error) {
 	return []hosts.Item{{ID: "local", Name: "本机", IsLocal: true, Connected: true, Active: true}}, nil
 }
 
-func (f *fakeBackend) ConnectHost(id string, password string) (*hosts.Item, error) {
-	return &hosts.Item{ID: id, Connected: true, Active: true}, nil
+func (f *fakeBackend) ConnectHost(id string, password string, remember bool) (*hosts.Item, error) {
+	return &hosts.Item{ID: id, Connected: true, Active: true, PasswordSaved: remember}, nil
 }
+
+func (f *fakeBackend) ForgetHostCredential(id string) error { return nil }
 
 func (f *fakeBackend) ListSwitches() ([]hyperv.VirtualSwitch, error) {
 	return []hyperv.VirtualSwitch{{Name: "Default Switch", SwitchType: "Internal"}}, nil
@@ -90,15 +94,93 @@ func (f *fakeBackend) CancelTask(id string) error {
 	return nil
 }
 
+func (f *fakeBackend) ListVMsForHost(hostID string) ([]hyperv.VM, error) {
+	return f.ListVMs()
+}
+
+func (f *fakeBackend) ListSwitchesForHost(hostID string) ([]hyperv.VirtualSwitch, error) {
+	return f.ListSwitches()
+}
+
+func (f *fakeBackend) ListHostNetworkAdapters() ([]hyperv.HostNetworkAdapter, error) {
+	return nil, nil
+}
+
+func (f *fakeBackend) CreateSwitch(req hyperv.CreateSwitchRequest) error { return nil }
+func (f *fakeBackend) RemoveSwitch(name string) error                    { return nil }
+
+func (f *fakeBackend) SuggestCloneDirectoryForHost(hostID, sourceName string) (string, error) {
+	return `D:\VMs`, nil
+}
+
+func (f *fakeBackend) GetActiveHost() (*hosts.Item, error) {
+	return &hosts.Item{ID: hosts.LocalID, Name: "本机", IsLocal: true, Connected: true, Active: true}, nil
+}
+
+func (f *fakeBackend) AddHost(request hosts.Request) (*hosts.Item, error) {
+	return &hosts.Item{ID: "host-new", Name: request.Name}, nil
+}
+
+func (f *fakeBackend) UpdateHost(request hosts.Request) (*hosts.Item, error) {
+	return &hosts.Item{ID: request.ID, Name: request.Name}, nil
+}
+
+func (f *fakeBackend) RemoveHost(id string) error { return nil }
+
+func (f *fakeBackend) SetActiveHost(id string) (*hosts.Item, error) {
+	return &hosts.Item{ID: id, Active: true, Connected: true}, nil
+}
+
+func (f *fakeBackend) GetEnvironmentStatus() (*hyperv.EnvironmentStatus, error) {
+	return &hyperv.EnvironmentStatus{Ready: true}, nil
+}
+
+func (f *fakeBackend) GetHostCapacity(hostID string) (*hyperv.HostCapacity, error) {
+	return &hyperv.HostCapacity{HostID: hostID, LogicalProcessors: 16, AvailableCPU: 12}, nil
+}
+
+func (f *fakeBackend) GetTunnelStatus() tunnel.Status {
+	return tunnel.Status{Enabled: false}
+}
+
+func (f *fakeBackend) GetEnhancedSessionStatus() (*hyperv.EnhancedSessionStatus, error) {
+	return &hyperv.EnhancedSessionStatus{Supported: true}, nil
+}
+
+func (f *fakeBackend) SetEnhancedSession(enabled bool) error { return nil }
+
+func (f *fakeBackend) ClearFinishedTasks() int { return 0 }
+
+func (f *fakeBackend) GetTaskStats() tasks.Stats { return tasks.Stats{Total: 1, Running: 1} }
+
+func (f *fakeBackend) GetSettings() (*settings.Settings, error) {
+	value := settings.Defaults()
+	return &value, nil
+}
+
+func (f *fakeBackend) SaveSettings(value settings.Settings) (*settings.Settings, error) {
+	return &value, nil
+}
+
+func (f *fakeBackend) GetDataDirectory() string { return `C:\data` }
+
+func (f *fakeBackend) GetVersions() (string, string) { return "0.1.1", "3.1.0" }
+
+func (f *fakeBackend) IsAdmin() bool { return true }
+
 func startServer(t *testing.T) (*fakeBackend, string, func()) {
 	t.Helper()
 	backend := &fakeBackend{}
-	server := httpapi.New(backend)
+	server := httpapi.New(backend, nil)
 	status := server.Apply(httpapi.Config{
 		Enabled:       true,
 		ListenAddress: "127.0.0.1",
 		Port:          0,
-		Token:         "secret-token",
+		Username:      "admin",
+		Password:      "secret",
+		APIKeys: []settings.APIKey{{
+			ID: "key-test", Name: "test", Token: "secret-token", Permission: settings.PermissionAdmin,
+		}},
 	})
 	if !status.Running {
 		t.Fatalf("API 启动失败: %s", status.Error)
@@ -139,14 +221,19 @@ func TestHTTPAPIAuth(t *testing.T) {
 	_, base, shutdown := startServer(t)
 	defer shutdown()
 
-	response, _ := doRequest(t, http.MethodGet, base+"/api/v1/health", "", nil)
+	response, _ := doRequest(t, http.MethodGet, base+"/api/v1/vms", "", nil)
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("未带 Token 应返回 401，实际 %d", response.StatusCode)
 	}
 
-	response, body := doRequest(t, http.MethodGet, base+"/api/v1/health", "secret-token", nil)
+	response, body := doRequest(t, http.MethodGet, base+"/api/v1/vms", "secret-token", nil)
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("健康检查应返回 200，实际 %d：%s", response.StatusCode, body)
+		t.Fatalf("带 Token 请求应返回 200，实际 %d：%s", response.StatusCode, body)
+	}
+
+	response, _ = doRequest(t, http.MethodGet, base+"/api/v1/health", "", nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("健康检查应公开访问，实际 %d", response.StatusCode)
 	}
 }
 

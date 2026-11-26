@@ -319,7 +319,7 @@ async function openTool(tool: string) {
 
 .recent-target {
   font-weight: 500;
-  color: #e6ebf4;
+  color: var(--text-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -353,13 +353,13 @@ async function openTool(tool: string) {
 .state-bar {
   height: 5px;
   border-radius: 3px;
-  background: #1b202b;
+  background: var(--bar-track);
   overflow: hidden;
 }
 
 .state-bar-fill {
   height: 100%;
-  background: #3c6fd6;
+  background: var(--bar-fill);
   border-radius: 3px;
   transition: width 0.3s ease;
 }
@@ -367,7 +367,7 @@ async function openTool(tool: string) {
 .state-count {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: #cfd6e4;
+  color: var(--text-3);
   font-size: 12px;
 }
 </style>

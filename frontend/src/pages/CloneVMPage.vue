@@ -6,8 +6,9 @@ import { CopyOutline, FolderOutline } from "@vicons/ionicons5";
 import PageHeader from "../components/PageHeader.vue";
 import HelpTip from "../components/HelpTip.vue";
 import VmStateTag from "../components/VmStateTag.vue";
+import HostConnectModal from "../components/HostConnectModal.vue";
 import { HyperVService, errorMessage } from "../api";
-import type { CloneRequest, VM, VirtualSwitch } from "../api";
+import type { CloneRequest, HostItem, VM, VirtualSwitch } from "../api";
 import { useAppStore } from "../stores/app";
 import { useHostsStore } from "../stores/hosts";
 import { useTaskStore } from "../stores/tasks";
@@ -24,6 +25,9 @@ const sourceVMs = ref<VM[]>([]);
 const submitting = ref(false);
 const loadingPath = ref(false);
 const defaultsApplied = ref(false);
+const showHostConnect = ref(false);
+const connectTarget = ref<HostItem | null>(null);
+const pendingSubmit = ref(false);
 
 const targetHostID = ref("");
 const targetHost = computed(
@@ -34,7 +38,6 @@ const hostOptions = computed(() =>
   hosts.items.map((item) => ({
     label: `${item.name}${item.isLocal ? "（本机）" : "（" + item.address + "）"}${item.connected ? "" : " · 未连接"}`,
     value: item.id,
-    disabled: !item.connected,
   }))
 );
 
@@ -146,7 +149,10 @@ async function browseDirectory() {
     return;
   }
   try {
-    const directory = await HyperVService.PickDirectory("选择克隆虚拟机存放目录");
+    const directory = await HyperVService.PickDirectoryIn(
+      "选择克隆虚拟机存放目录",
+      form.targetDirectory || app.settings?.storageRoot || ""
+    );
     if (directory) form.targetDirectory = directory;
   } catch (err) {
     message.error(errorMessage(err));
@@ -190,7 +196,8 @@ async function submit() {
     return;
   }
   if (!host.connected) {
-    message.warning("目标计算机尚未连接，请先到“计算机”页面连接");
+    pendingSubmit.value = true;
+    await ensureHostConnected(host);
     return;
   }
 
@@ -255,7 +262,36 @@ async function onTargetHostChange(value: string) {
   form.newName = "";
   form.targetDirectory = "";
   switches.value = [];
+  const host = hosts.items.find((item) => item.id === value);
+  await ensureHostConnected(host);
   await Promise.all([loadSwitches(), loadSourceVMs()]);
+}
+
+async function ensureHostConnected(host: HostItem | undefined): Promise<boolean> {
+  if (!host) return false;
+  if (host.isLocal || host.connected) return true;
+  if (host.passwordSaved) {
+    try {
+      await hosts.connect(host.id, "");
+      message.success(`已连接 ${host.name}`);
+      await hosts.fetch();
+      return true;
+    } catch {
+      // 落回密码输入
+    }
+  }
+  connectTarget.value = host;
+  showHostConnect.value = true;
+  return false;
+}
+
+async function onHostConnected(host: HostItem) {
+  await hosts.fetch();
+  await Promise.all([loadSwitches(), loadSourceVMs()]);
+  if (pendingSubmit.value && host.id === targetHostID.value) {
+    pendingSubmit.value = false;
+    await submit();
+  }
 }
 
 onMounted(async () => {
@@ -479,6 +515,11 @@ onMounted(async () => {
       </div>
     </div>
   </div>
+  <HostConnectModal
+    v-model:show="showHostConnect"
+    :host="connectTarget"
+    @connected="onHostConnected"
+  />
 </template>
 
 <style scoped>
@@ -500,7 +541,7 @@ onMounted(async () => {
   padding: 8px 10px;
   margin-bottom: 14px;
   border-radius: 8px;
-  background: #10131a;
+  background: var(--input-bg);
   border: 1px solid var(--border-soft);
 }
 
@@ -521,7 +562,7 @@ onMounted(async () => {
 .detail-section-title {
   font-size: 12px;
   font-weight: 600;
-  color: #cfd6e4;
+  color: var(--text-3);
   margin: 16px 0 10px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border-soft);

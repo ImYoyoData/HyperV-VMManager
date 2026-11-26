@@ -7,6 +7,9 @@ export const useHostsStore = defineStore("hosts", {
     items: [] as HostItem[],
     loading: false,
     error: "",
+    // 仅保存在当前应用内存中的密码，用于切换主机后打开 VMConnect。
+    // 不写入任何持久化存储，应用退出即清空。
+    passwords: {} as Record<string, string>,
   }),
   getters: {
     active: (state) => state.items.find((item) => item.active) ?? null,
@@ -37,10 +40,16 @@ export const useHostsStore = defineStore("hosts", {
     },
     async remove(id: string) {
       await HyperVService.RemoveHost(id);
+      delete this.passwords[id];
       await this.fetch();
     },
-    async connect(id: string, password: string) {
-      const item = await HyperVService.ConnectHost(id, password);
+    async connect(id: string, password: string, remember = true) {
+      const item = await HyperVService.ConnectHost(id, password, remember);
+      if (password) {
+        this.passwords[id] = password;
+      } else {
+        delete this.passwords[id];
+      }
       await this.fetch();
       return item;
     },

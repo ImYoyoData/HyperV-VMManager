@@ -1,8 +1,10 @@
 import { defineStore } from "pinia";
 import { Events } from "@wailsio/runtime";
 import { TaskFinished, TaskUpdate } from "../../bindings/events";
-import { HyperVService, errorMessage } from "../api";
+import { HyperVService, errorMessage, isWebMode } from "../api";
 import type { Task } from "../api";
+
+let webPollTimer: ReturnType<typeof setInterval> | undefined;
 
 export const useTaskStore = defineStore("tasks", {
   state: () => ({
@@ -48,6 +50,13 @@ export const useTaskStore = defineStore("tasks", {
     bindEvents() {
       if (this.bound) return;
       this.bound = true;
+      if (isWebMode) {
+        // 浏览器没有 Wails 事件通道，用轮询刷新任务进度。
+        webPollTimer = setInterval(() => {
+          void this.fetch();
+        }, 3000);
+        return;
+      }
       Events.On(TaskUpdate, (event: { data: Task }) => {
         if (event?.data) {
           this.upsert(event.data);
@@ -58,6 +67,12 @@ export const useTaskStore = defineStore("tasks", {
           this.upsert(event.data);
         }
       });
+    },
+    stopEvents() {
+      if (webPollTimer) {
+        clearInterval(webPollTimer);
+        webPollTimer = undefined;
+      }
     },
     async cancel(id: string) {
       await HyperVService.CancelTask(id);

@@ -5,11 +5,11 @@ version: '3'
 
 # This information is used to generate the build assets.
 info:
-  companyName: "Local" # The name of the company
-  productName: "Hyper-V 虚拟机管理助手" # The name of the application
+  companyName: "YoyoData" # The name of the company
+  productName: "Hyper-V VM Assistant" # The name of the application
   productIdentifier: "com.local.hypervvmmanager" # The unique product identifier
-  description: "Hyper-V 虚拟机可视化管理工具" # The application description
-  copyright: "(c) 2026, Local" # Copyright text
+  description: "面向云电脑与 AI Agent 的 Hyper-V 虚拟机管理助手" # The application description
+  copyright: "(c) 2026, Yoyo" # Copyright text
   comments: "Hyper-V VM Manager" # Comments
   version: "0.1.1" # The application version
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)

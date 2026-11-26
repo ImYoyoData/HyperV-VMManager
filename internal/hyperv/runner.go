@@ -12,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 // Target 描述当前要操作的 Hyper-V 主机。ComputerName 为空表示本机。
@@ -96,7 +99,11 @@ func buildScript(body string, withBOM bool) string {
 }
 
 // remoteWrapperScript 在本地执行：建立 WinRM 会话，把目标脚本送到远程主机执行。
+// 错误统一以 HVFAIL:base64(UTF-8) 写到 stdout，避免中文 Windows 的 GBK 控制台
+// 代码页把中文错误消息变成乱码。
 const remoteWrapperScript = `$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $sessionParams = @{ ComputerName = $env:HV_HOST; ErrorAction = 'Stop' }
 if ($env:HV_PORT) { $sessionParams.Port = [int]$env:HV_PORT }
 if ($env:HV_SSL -eq '1') {
@@ -122,7 +129,8 @@ try {
   $last = @($output) | Select-Object -Last 1
   if ($null -ne $last) { [Console]::Out.Write([string]$last) }
 } catch {
-  [Console]::Error.Write($_.Exception.Message)
+  $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$($_.Exception.Message)"))
+  [Console]::Out.Write("HVFAIL:$b64")
   exit 1
 } finally {
   if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
@@ -163,6 +171,42 @@ func parseOutput(raw string, out any) error {
 		return fmt.Errorf("无法解析 PowerShell 返回的数据: %w", err)
 	}
 	return nil
+}
+
+// decodeConsoleText 把 Windows 控制台输出转换为 UTF-8。
+// 中文 Windows 的控制台默认使用 GBK(936) 代码页，若直接当作 UTF-8
+// 展示，中文错误消息会变成乱码。
+func decodeConsoleText(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if utf8.ValidString(raw) {
+		return raw
+	}
+	if decoded, err := simplifiedchinese.GBK.NewDecoder().String(raw); err == nil {
+		return strings.TrimSpace(decoded)
+	}
+	return raw
+}
+
+// failureDetail 从 stdout / stderr 中提取可读的失败原因。
+// 连接阶段（New-PSSession）的错误会以 HVFAIL:base64(UTF-8) 写到 stdout；
+// 其他 PowerShell 运行时错误则以本地控制台编码写到 stderr。
+func failureDetail(stdout, stderr string) string {
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "HVFAIL:") {
+			continue
+		}
+		message := strings.TrimPrefix(line, "HVFAIL:")
+		if decoded, err := base64.StdEncoding.DecodeString(message); err == nil {
+			if text := strings.TrimSpace(string(decoded)); text != "" {
+				return text
+			}
+		}
+	}
+	return decodeConsoleText(stderr)
 }
 
 // run 执行脚本并解析结果。远程目标会通过 WinRM 在目标主机上执行。
@@ -208,9 +252,10 @@ func (c *Client) runLocal(ctx context.Context, body string, opts any, out any) e
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+		if detail := failureDetail(stdout.String(), stderr.String()); detail != "" {
 			return errors.New(detail)
 		}
+		return fmt.Errorf("PowerShell 执行失败: %w", runErr)
 	}
 	return parseOutput(stdout.String(), out)
 }
@@ -267,10 +312,10 @@ func (c *Client) runRemote(ctx context.Context, body string, opts any, out any) 
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			return fmt.Errorf("连接远程主机 %s 失败: %s", c.target.ComputerName, detail)
+		if detail := failureDetail(stdout.String(), stderr.String()); detail != "" {
+			return errors.New(detail)
 		}
-		return fmt.Errorf("连接远程主机 %s 失败: %w", c.target.ComputerName, runErr)
+		return fmt.Errorf("WinRM 连接失败: %w", runErr)
 	}
 	return parseOutput(stdout.String(), out)
 }

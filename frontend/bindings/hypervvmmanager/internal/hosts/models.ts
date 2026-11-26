@@ -15,6 +15,7 @@ export interface Item {
     "isLocal": boolean;
     "connected": boolean;
     "active": boolean;
+    "passwordSaved": boolean;
     "lastConnectedAt"?: string;
 }
 

@@ -76,6 +76,7 @@ type HostNetworkAdapter struct {
 // HostInfo 描述 Hyper-V 主机与增强会话状态。
 type HostInfo struct {
 	ComputerName             string `json:"computerName"`
+	UserName                 string `json:"userName"`
 	OSName                   string `json:"osName"`
 	HyperVVersion            string `json:"hyperVVersion"`
 	LogicalProcessors        int    `json:"logicalProcessors"`
@@ -162,3 +163,25 @@ const (
 
 // ProgressFunc 由任务队列注入，用于上报进度与当前步骤。
 type ProgressFunc func(percent int, step string)
+
+// DiskSpace 描述一个逻辑磁盘的容量。
+type DiskSpace struct {
+	Drive      string `json:"drive"`
+	TotalBytes int64  `json:"totalBytes"`
+	FreeBytes  int64  `json:"freeBytes"`
+}
+
+// HostCapacity 汇总主机的 CPU / 内存 / 磁盘分配情况。
+type HostCapacity struct {
+	HostID            string      `json:"hostID"`
+	Name              string      `json:"name"`
+	IsLocal           bool        `json:"isLocal"`
+	LogicalProcessors int         `json:"logicalProcessors"`
+	AllocatedCPU      int         `json:"allocatedCPU"`
+	AvailableCPU      int         `json:"availableCPU"`
+	TotalMemoryMB     int64       `json:"totalMemoryMB"`
+	AllocatedMemoryMB int64       `json:"allocatedMemoryMB"`
+	ReservedMemoryMB  int64       `json:"reservedMemoryMB"`
+	AvailableMemoryMB int64       `json:"availableMemoryMB"`
+	Disks             []DiskSpace `json:"disks"`
+}

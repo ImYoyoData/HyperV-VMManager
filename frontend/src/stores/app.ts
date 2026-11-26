@@ -25,9 +25,9 @@ export const useAppStore = defineStore("app", {
     isRemote: (state) => !!state.activeHost && !state.activeHost.isLocal,
     hostLabel: (state) => state.activeHost?.name || "本机",
     apiBaseURL: (state) =>
-      state.settings && state.settings.api
-        ? `http://${state.settings.api.listenAddress}:${state.settings.api.port}`
-        : "",
+      state.settings && state.settings.web
+        ? `http://${state.settings.web.listenAddress}:${state.settings.web.port}`
+        : "http://127.0.0.1:17890",
   },
   actions: {
     async init() {
