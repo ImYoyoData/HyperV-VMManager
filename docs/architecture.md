@@ -119,8 +119,8 @@ POST   /api/v1/hosts/{id}/connect      连接并切换当前计算机
 GET    /api/v1/host                    当前主机信息
 GET    /api/v1/vms                     虚拟机列表
 GET    /api/v1/vms/{name}              虚拟机详情
-POST   /api/v1/vms                     新建虚拟机（异步任务）
-POST   /api/v1/vms/{name}/clone        克隆虚拟机（异步任务）
+POST   /api/v1/vms                     新建虚拟机（异步任务；?hostId= 指定目标计算机）
+POST   /api/v1/vms/{name}/clone        克隆虚拟机（异步任务；?hostId= 指定目标计算机）
 PATCH  /api/v1/vms/{name}              编辑虚拟机（异步任务）
 DELETE /api/v1/vms/{name}?deleteFiles=true  删除虚拟机（异步任务）
 POST   /api/v1/vms/{name}/power        电源操作（异步任务）

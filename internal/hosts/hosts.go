@@ -92,6 +92,9 @@ func (s *Store) load() error {
 	for _, profile := range profiles {
 		profile = normalizeProfile(profile)
 		if profile.ID == LocalID {
+			if hasLocal {
+				continue
+			}
 			hasLocal = true
 			profile.Address = ""
 			profile.Port = 0

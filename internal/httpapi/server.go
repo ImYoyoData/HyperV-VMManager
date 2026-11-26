@@ -44,8 +44,8 @@ type Backend interface {
 	ListHosts() ([]hosts.Item, error)
 	ConnectHost(id string, password string) (*hosts.Item, error)
 
-	SubmitCreate(req hyperv.CreateRequest) (*tasks.Task, error)
-	SubmitClone(req hyperv.CloneRequest) (*tasks.Task, error)
+	SubmitCreate(hostID string, req hyperv.CreateRequest) (*tasks.Task, error)
+	SubmitClone(hostID string, req hyperv.CloneRequest) (*tasks.Task, error)
 	SubmitEdit(name string, req hyperv.EditRequest) (*tasks.Task, error)
 	SubmitDelete(name string, deleteFiles bool) (*tasks.Task, error)
 	SubmitPower(name string, action string) (*tasks.Task, error)
@@ -241,7 +241,7 @@ func (s *Server) routes() http.Handler {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		task, err := s.backend.SubmitCreate(req)
+		task, err := s.backend.SubmitCreate(hostIDFromRequest(r), req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -256,7 +256,7 @@ func (s *Server) routes() http.Handler {
 			return
 		}
 		req.SourceName = r.PathValue("name")
-		task, err := s.backend.SubmitClone(req)
+		task, err := s.backend.SubmitClone(hostIDFromRequest(r), req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -364,6 +364,14 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 		return fmt.Errorf("请求体不是合法的 JSON: %w", err)
 	}
 	return nil
+}
+
+// hostIDFromRequest 读取显式指定的目标主机：?hostId=... 或 X-HyperV-Host 头。
+func hostIDFromRequest(r *http.Request) string {
+	if value := strings.TrimSpace(r.URL.Query().Get("hostId")); value != "" {
+		return value
+	}
+	return strings.TrimSpace(r.Header.Get("X-HyperV-Host"))
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

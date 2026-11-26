@@ -509,6 +509,46 @@ func (s *HyperVService) ListVMs() ([]hyperv.VM, error) {
 	return s.currentClient().ListVMs(ctx)
 }
 
+// ListVMsForHost 返回指定主机的虚拟机列表（用于新建/克隆时选择目标计算机）。
+func (s *HyperVService) ListVMsForHost(hostID string) ([]hyperv.VM, error) {
+	client, err := s.clientForHost(hostID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	return client.ListVMs(ctx)
+}
+
+// ListSwitchesForHost 返回指定主机的虚拟交换机。
+func (s *HyperVService) ListSwitchesForHost(hostID string) ([]hyperv.VirtualSwitch, error) {
+	client, err := s.clientForHost(hostID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	return client.ListSwitches(ctx)
+}
+
+// SuggestCloneDirectoryForHost 返回指定主机上源虚拟机的所在目录。
+func (s *HyperVService) SuggestCloneDirectoryForHost(hostID string, sourceName string) (string, error) {
+	client, err := s.clientForHost(hostID)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	vm, err := client.GetVM(ctx, sourceName)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(vm.Path) == "" {
+		return "", errors.New("无法获取源虚拟机路径")
+	}
+	return filepath.Dir(vm.Path), nil
+}
+
 // GetVM 返回单个虚拟机详情。
 func (s *HyperVService) GetVM(name string) (*hyperv.VM, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -530,8 +570,8 @@ func (s *HyperVService) SuggestCloneDirectory(sourceName string) (string, error)
 	return filepath.Dir(vm.Path), nil
 }
 
-// SubmitClone 提交克隆任务。
-func (s *HyperVService) SubmitClone(req hyperv.CloneRequest) (*tasks.Task, error) {
+// SubmitClone 提交克隆任务；hostID 为空时使用当前主机。
+func (s *HyperVService) SubmitClone(hostID string, req hyperv.CloneRequest) (*tasks.Task, error) {
 	req.SourceName = strings.TrimSpace(req.SourceName)
 	req.NewName = strings.TrimSpace(req.NewName)
 	req.TargetDirectory = strings.TrimSpace(req.TargetDirectory)
@@ -556,15 +596,18 @@ func (s *HyperVService) SubmitClone(req hyperv.CloneRequest) (*tasks.Task, error
 	if err := hyperv.ValidateBandwidth(req.BandwidthMbps); err != nil {
 		return nil, err
 	}
-	if err := s.ensureNoActiveTask(tasks.KindClone, s.activeHostIDValue(), req.NewName); err != nil {
+	resolvedHost, err := s.resolveHost(hostID)
+	if err != nil {
 		return nil, err
 	}
-	hostID := s.activeHostIDValue()
-	return s.queue.SubmitForHost(hostID, tasks.KindClone, req.NewName, cloneTaskPayload{HostID: hostID, Request: req})
+	if err := s.ensureNoActiveTask(tasks.KindClone, resolvedHost, req.NewName); err != nil {
+		return nil, err
+	}
+	return s.queue.SubmitForHost(resolvedHost, tasks.KindClone, req.NewName, cloneTaskPayload{HostID: resolvedHost, Request: req})
 }
 
-// SubmitCreate 提交新建任务。
-func (s *HyperVService) SubmitCreate(req hyperv.CreateRequest) (*tasks.Task, error) {
+// SubmitCreate 提交新建任务；hostID 为空时使用当前主机。
+func (s *HyperVService) SubmitCreate(hostID string, req hyperv.CreateRequest) (*tasks.Task, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Directory = strings.TrimSpace(req.Directory)
 	req.ImagePath = strings.TrimSpace(req.ImagePath)
@@ -599,11 +642,14 @@ func (s *HyperVService) SubmitCreate(req hyperv.CreateRequest) (*tasks.Task, err
 	default:
 		return nil, errors.New("未知的磁盘方式")
 	}
-	if err := s.ensureNoActiveTask(tasks.KindCreate, s.activeHostIDValue(), req.Name); err != nil {
+	resolvedHost, err := s.resolveHost(hostID)
+	if err != nil {
 		return nil, err
 	}
-	hostID := s.activeHostIDValue()
-	return s.queue.SubmitForHost(hostID, tasks.KindCreate, req.Name, createTaskPayload{HostID: hostID, Request: req})
+	if err := s.ensureNoActiveTask(tasks.KindCreate, resolvedHost, req.Name); err != nil {
+		return nil, err
+	}
+	return s.queue.SubmitForHost(resolvedHost, tasks.KindCreate, req.Name, createTaskPayload{HostID: resolvedHost, Request: req})
 }
 
 // SubmitEdit 提交编辑任务。
@@ -672,6 +718,16 @@ func (s *HyperVService) SubmitPower(name string, action string) (*tasks.Task, er
 		return nil, err
 	}
 	return s.queue.SubmitForHost(hostID, tasks.KindPower, name, powerPayload{HostID: hostID, Name: name, Action: action})
+}
+
+func (s *HyperVService) resolveHost(hostID string) (string, error) {
+	if strings.TrimSpace(hostID) == "" {
+		hostID = s.activeHostIDValue()
+	}
+	if _, err := s.clientForHost(hostID); err != nil {
+		return "", err
+	}
+	return hostID, nil
 }
 
 func (s *HyperVService) ensureNoActiveTask(kind string, hostID string, target string) error {

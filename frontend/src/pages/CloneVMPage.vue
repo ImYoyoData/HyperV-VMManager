@@ -7,23 +7,36 @@ import PageHeader from "../components/PageHeader.vue";
 import HelpTip from "../components/HelpTip.vue";
 import VmStateTag from "../components/VmStateTag.vue";
 import { HyperVService, errorMessage } from "../api";
-import type { CloneRequest, VirtualSwitch } from "../api";
+import type { CloneRequest, VM, VirtualSwitch } from "../api";
 import { useAppStore } from "../stores/app";
+import { useHostsStore } from "../stores/hosts";
 import { useTaskStore } from "../stores/tasks";
-import { useVMStore } from "../stores/vms";
 import { formatMB, switchTypeLabel, vmStateLabel } from "../utils/format";
 
 const router = useRouter();
 const message = useMessage();
 const app = useAppStore();
-const vmStore = useVMStore();
+const hosts = useHostsStore();
 const taskStore = useTaskStore();
 
 const switches = ref<VirtualSwitch[]>([]);
+const sourceVMs = ref<VM[]>([]);
 const submitting = ref(false);
 const loadingPath = ref(false);
 const defaultsApplied = ref(false);
-const isRemote = computed(() => app.isRemote);
+
+const targetHostID = ref("");
+const targetHost = computed(
+  () => hosts.items.find((item) => item.id === targetHostID.value) ?? app.activeHost
+);
+const isRemote = computed(() => !!targetHost.value && !targetHost.value.isLocal);
+const hostOptions = computed(() =>
+  hosts.items.map((item) => ({
+    label: `${item.name}${item.isLocal ? "（本机）" : "（" + item.address + "）"}${item.connected ? "" : " · 未连接"}`,
+    value: item.id,
+    disabled: !item.connected,
+  }))
+);
 
 const form = reactive({
   sourceName: "",
@@ -40,13 +53,15 @@ const form = reactive({
   bandwidthMbps: 100,
 });
 
-const sourceVM = computed(() => vmStore.byName(form.sourceName));
+const sourceVM = computed(
+  () => sourceVMs.value.find((vm) => vm.name === form.sourceName) ?? null
+);
 const sourceIsRunning = computed(
   () => !!sourceVM.value && sourceVM.value.state !== "Off"
 );
 
 const vmOptions = computed(() =>
-  vmStore.items.map((vm) => ({
+  sourceVMs.value.map((vm) => ({
     label: `${vm.name}（${vmStateLabel(vm.state)}）`,
     value: vm.name,
   }))
@@ -87,7 +102,10 @@ async function refreshSourceDirectory(name: string) {
   if (!name) return;
   loadingPath.value = true;
   try {
-    const directory = await HyperVService.SuggestCloneDirectory(name);
+    const directory = await HyperVService.SuggestCloneDirectoryForHost(
+      targetHostID.value,
+      name
+    );
     if (directory) {
       form.targetDirectory = directory;
     }
@@ -99,7 +117,7 @@ async function refreshSourceDirectory(name: string) {
 }
 
 async function onSourceChange(name: string) {
-  const vm = vmStore.byName(name);
+  const vm = sourceVMs.value.find((item) => item.name === name);
   if (!vm) return;
   form.newName = `${vm.name}-Clone`;
   form.startupMB = vm.memoryStartupMB;
@@ -123,6 +141,10 @@ watch(
 );
 
 async function browseDirectory() {
+  if (isRemote.value) {
+    message.warning("目标主机是远程计算机，请手动输入远程主机上的目标目录");
+    return;
+  }
   try {
     const directory = await HyperVService.PickDirectory("选择克隆虚拟机存放目录");
     if (directory) form.targetDirectory = directory;
@@ -162,6 +184,15 @@ async function submit() {
     message.warning("请选择源虚拟机");
     return;
   }
+  const host = hosts.items.find((item) => item.id === targetHostID.value);
+  if (!host) {
+    message.warning("请选择目标计算机");
+    return;
+  }
+  if (!host.connected) {
+    message.warning("目标计算机尚未连接，请先到“计算机”页面连接");
+    return;
+  }
 
   submitting.value = true;
   try {
@@ -180,8 +211,8 @@ async function submit() {
       switchName: form.switchName,
       bandwidthMbps: Number(form.bandwidthMbps),
     };
-    const task = await HyperVService.SubmitClone(request);
-    message.success(`克隆任务已提交${task ? `（${task.id}）` : ""}`);
+    const task = await HyperVService.SubmitClone(targetHostID.value, request);
+    message.success(`克隆任务已提交到 ${host.name}${task ? `（${task.id}）` : ""}`);
     void taskStore.fetch();
     void router.push("/tasks");
   } catch (err) {
@@ -192,17 +223,49 @@ async function submit() {
 }
 
 async function loadSwitches() {
+  const hostID = targetHostID.value;
+  if (!hostID) {
+    switches.value = [];
+    return;
+  }
   try {
-    switches.value = (await HyperVService.ListSwitches()) ?? [];
+    switches.value = (await HyperVService.ListSwitchesForHost(hostID)) ?? [];
   } catch {
     switches.value = [];
   }
 }
 
-onMounted(() => {
+async function loadSourceVMs() {
+  const hostID = targetHostID.value;
+  if (!hostID) {
+    sourceVMs.value = [];
+    return;
+  }
+  try {
+    sourceVMs.value = (await HyperVService.ListVMsForHost(hostID)) ?? [];
+  } catch (err) {
+    sourceVMs.value = [];
+    message.warning(`读取目标计算机的虚拟机失败：${errorMessage(err)}`);
+  }
+}
+
+async function onTargetHostChange(value: string) {
+  targetHostID.value = value;
+  form.sourceName = "";
+  form.newName = "";
+  form.targetDirectory = "";
+  switches.value = [];
+  await Promise.all([loadSwitches(), loadSourceVMs()]);
+}
+
+onMounted(async () => {
   applyDefaults();
-  void vmStore.fetch();
-  void loadSwitches();
+  await hosts.fetch();
+  if (!targetHostID.value) {
+    targetHostID.value =
+      app.activeHost?.id || hosts.items.find((item) => item.isLocal)?.id || hosts.items[0]?.id || "";
+  }
+  await Promise.all([loadSwitches(), loadSourceVMs()]);
 });
 </script>
 
@@ -211,13 +274,9 @@ onMounted(() => {
     <n-button size="small" @click="router.push('/vms')">返回虚拟机列表</n-button>
   </PageHeader>
 
-  <n-alert v-if="isRemote" type="warning" class="inline-error" title="当前连接的是远程主机">
-    克隆任务会在远程主机「{{ app.activeHost?.name }}」上执行。目标目录必须是该远程主机上的绝对路径，
+  <n-alert v-if="isRemote" type="warning" class="inline-error" title="目标计算机是远程主机">
+    克隆任务会在远程主机「{{ targetHost?.name }}」上执行。目标目录必须是该远程主机上的绝对路径，
     且需要足够的磁盘空间用于导出和导入。
-  </n-alert>
-
-  <n-alert v-if="vmStore.error" type="warning" class="inline-error" title="无法读取虚拟机列表">
-    {{ vmStore.error }}
   </n-alert>
 
   <div class="wizard-layout">
@@ -230,6 +289,22 @@ onMounted(() => {
       </div>
 
       <n-form label-placement="top" size="small">
+        <n-form-item>
+          <template #label>
+            目标计算机
+            <HelpTip>
+              <p>克隆任务会提交到所选计算机上执行，不会切换当前管理主机。</p>
+              <p>源虚拟机列表来自目标计算机；切换目标计算机会重新读取该主机上的虚拟机。</p>
+            </HelpTip>
+          </template>
+          <n-select
+            v-model:value="targetHostID"
+            :options="hostOptions"
+            placeholder="选择目标计算机"
+            @update:value="onTargetHostChange"
+          />
+        </n-form-item>
+
         <div class="form-grid">
           <n-form-item label="源虚拟机">
             <n-select
@@ -344,6 +419,10 @@ onMounted(() => {
 
     <div class="summary-card">
       <div class="summary-title">克隆摘要</div>
+      <div class="summary-row">
+        <span class="key">目标计算机</span>
+        <span class="value">{{ targetHost?.name || "—" }}<template v-if="isRemote">（远程）</template></span>
+      </div>
       <div class="summary-row">
         <span class="key">源虚拟机</span>
         <span class="value">{{ form.sourceName || "—" }}</span>

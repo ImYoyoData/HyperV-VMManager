@@ -151,7 +151,15 @@ const groups: ApiGroup[] = [
         path: "/api/v1/vms",
         title: "新建虚拟机",
         description:
-          "从空硬盘、差异磁盘或完整复制创建虚拟机。任务会先创建虚拟硬盘，再创建虚拟机并应用硬件配置。",
+          "从空硬盘、差异磁盘或完整复制创建虚拟机。任务会先创建虚拟硬盘，再创建虚拟机并应用硬件配置。可用 hostId 指定目标计算机。",
+        params: [
+          {
+            name: "hostId",
+            type: "string（查询参数）",
+            required: "否",
+            description: "目标计算机 ID；省略时使用当前主机。也可以放在 X-HyperV-Host 请求头中",
+          },
+        ],
         body: [
           { name: "name", type: "string", required: "是", description: "新虚拟机名称，不能包含 \\ / : * ? \" < > |" },
           { name: "generation", type: "number", required: "是", description: "代数：1（BIOS）或 2（UEFI）" },
@@ -201,8 +209,16 @@ const groups: ApiGroup[] = [
         path: "/api/v1/vms/{name}/clone",
         title: "克隆虚拟机",
         description:
-          "整台复制源虚拟机：导出 → 导入 → 重命名 → 应用内存/CPU/网络/带宽，并重新生成动态 MAC 地址。源机运行时会先关机（可关闭该行为）。",
-        params: [{ name: "name", type: "string（路径）", required: "是", description: "源虚拟机名称" }],
+          "整台复制源虚拟机：导出 → 导入 → 重命名 → 应用内存/CPU/网络/带宽，并重新生成动态 MAC 地址。源机运行时会先关机（可关闭该行为）。可用 hostId 指定目标计算机。",
+        params: [
+          { name: "name", type: "string（路径）", required: "是", description: "源虚拟机名称" },
+          {
+            name: "hostId",
+            type: "string（查询参数）",
+            required: "否",
+            description: "目标计算机 ID；省略时使用当前主机。也可以放在 X-HyperV-Host 请求头中",
+          },
+        ],
         body: [
           { name: "newName", type: "string", required: "是", description: "新虚拟机名称" },
           { name: "targetDirectory", type: "string", required: "是", description: "存放根目录，最终目录为 targetDirectory\\newName" },
@@ -385,9 +401,10 @@ async function copyText(value: string) {
     </n-alert>
     <n-alert type="info" :show-icon="true" style="margin-top: 12px">
       当前 API 操作的是“当前主机”。先通过 <span class="mono-text">GET /api/v1/hosts</span> 查看计算机，
-      再用 <span class="mono-text">POST /api/v1/hosts/{id}/connect</span> 连接并切换，
-      之后新建、克隆、编辑、删除、电源操作都会作用于该主机。远程主机需要启用 WinRM，
-      并且账户具备 Hyper-V 管理权限。
+      再用 <span class="mono-text">POST /api/v1/hosts/{id}/connect</span> 连接并切换；
+      新建和克隆接口也可以通过 <span class="mono-text">?hostId=</span> 或
+      <span class="mono-text">X-HyperV-Host</span> 显式指定目标计算机，而不切换当前主机。
+      远程主机需要启用 WinRM，并且账户具备 Hyper-V 管理权限。
     </n-alert>
     <n-alert type="warning" :show-icon="true" style="margin-top: 10px">
       连接远程主机时，虚拟机目录、镜像和 ISO 必须填写远程主机上的绝对路径；本机文件选择器不可用。

@@ -16,10 +16,12 @@ import TaskStatusTag from "../components/TaskStatusTag.vue";
 import { errorMessage } from "../api";
 import type { Task } from "../api";
 import { useTaskStore } from "../stores/tasks";
+import { useHostsStore } from "../stores/hosts";
 import { formatDateTime, formatTimeOnly, isPendingStatus } from "../utils/format";
 
 const message = useMessage();
 const taskStore = useTaskStore();
+const hosts = useHostsStore();
 
 const selectedId = ref("");
 const showDetail = ref(false);
@@ -29,6 +31,11 @@ const canceling = ref("");
 const selectedTask = computed(
   () => taskStore.items.find((task) => task.id === selectedId.value) ?? null
 );
+
+function hostName(hostID?: string | null): string {
+  if (!hostID) return "本机";
+  return hosts.items.find((item) => item.id === hostID)?.name ?? hostID;
+}
 
 const stats = computed(() => ({
   queued: taskStore.items.filter((task) => task.status === "queued").length,
@@ -64,6 +71,12 @@ const columns: DataTableColumns<Task> = [
     key: "kind",
     width: 78,
     render: (row) => h(TaskKindTag, { kind: row.kind }),
+  },
+  {
+    title: "计算机",
+    key: "hostID",
+    width: 120,
+    render: (row) => h("span", { class: "cell-muted" }, hostName(row.hostID)),
   },
   {
     title: "目标",
@@ -191,6 +204,7 @@ watch(
 
 onMounted(() => {
   void taskStore.fetch();
+  void hosts.fetch();
 });
 </script>
 
@@ -251,6 +265,9 @@ onMounted(() => {
         </n-descriptions-item>
         <n-descriptions-item label="目标">
           {{ selectedTask.target || "—" }}
+        </n-descriptions-item>
+        <n-descriptions-item label="计算机">
+          {{ hostName(selectedTask.hostID) }}
         </n-descriptions-item>
         <n-descriptions-item label="创建时间">
           {{ formatDateTime(selectedTask.createdAt) }}

@@ -145,6 +145,26 @@ async function activate(item: HostItem) {
   openConnect(item);
 }
 
+// 本地计算机固定只有一个：已经存在时直接切换，不会重复添加。
+async function addLocal() {
+  const local = hosts.items.find((item) => item.isLocal);
+  if (!local) {
+    message.warning("未找到本地计算机配置，请重新打开应用");
+    return;
+  }
+  if (local.active) {
+    message.info("本地计算机只能存在一个，当前已经连接到本机");
+    return;
+  }
+  try {
+    await hosts.connect(local.id, "");
+    message.success("本地计算机已存在，已切换到本机");
+    await afterSwitch();
+  } catch (err) {
+    message.error(errorMessage(err));
+  }
+}
+
 function openConnect(item: HostItem) {
   connectTarget.value = item;
   connectPassword.value = "";
@@ -215,6 +235,12 @@ onMounted(() => {
         <n-icon :component="RefreshOutline" />
       </template>
       刷新
+    </n-button>
+    <n-button size="small" @click="addLocal">
+      <template #icon>
+        <n-icon :component="DesktopOutline" />
+      </template>
+      添加本地
     </n-button>
     <n-button size="small" type="primary" @click="openAdd">
       <template #icon>
@@ -299,6 +325,7 @@ onMounted(() => {
   <div class="panel remote-help">
     <div class="card-title">连接远程 Hyper-V 主机的前提</div>
     <ul class="help-list">
+      <li>本地计算机固定为运行管理助手的这台电脑，只能存在一个；远程计算机可以添加多个。</li>
       <li>远程主机已启用 WinRM（PowerShell Remoting），默认端口 5985（HTTP）或 5986（HTTPS）。</li>
       <li>使用的 Windows 账户在远程主机上属于管理员或 Hyper-V Administrators，具备 Hyper-V 管理权限。</li>
       <li>远程主机已启用 Hyper-V 功能，并且虚拟化在 BIOS/UEFI 中已开启。</li>

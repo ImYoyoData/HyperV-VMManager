@@ -48,11 +48,11 @@ func (f *fakeBackend) SuggestCloneDirectory(sourceName string) (string, error) {
 	return `D:\VMs`, nil
 }
 
-func (f *fakeBackend) SubmitCreate(req hyperv.CreateRequest) (*tasks.Task, error) {
+func (f *fakeBackend) SubmitCreate(hostID string, req hyperv.CreateRequest) (*tasks.Task, error) {
 	return &tasks.Task{ID: "T-CREATE", Kind: "create", Target: req.Name, Status: "queued"}, nil
 }
 
-func (f *fakeBackend) SubmitClone(req hyperv.CloneRequest) (*tasks.Task, error) {
+func (f *fakeBackend) SubmitClone(hostID string, req hyperv.CloneRequest) (*tasks.Task, error) {
 	f.lastClone = req
 	return &tasks.Task{ID: "T-CLONE", Kind: "clone", Target: req.NewName, Status: "queued"}, nil
 }

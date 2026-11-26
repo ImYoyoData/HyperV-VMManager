@@ -178,6 +178,13 @@ export function ListSwitches(): $CancellablePromise<hyperv$0.VirtualSwitch[] | n
 }
 
 /**
+ * ListSwitchesForHost 返回指定主机的虚拟交换机。
+ */
+export function ListSwitchesForHost(hostID: string): $CancellablePromise<hyperv$0.VirtualSwitch[] | null> {
+    return $Call.ByID(2340339471, hostID);
+}
+
+/**
  * ListTasks 返回任务列表。
  */
 export function ListTasks(limit: number): $CancellablePromise<tasks$0.Task[] | null> {
@@ -189,6 +196,13 @@ export function ListTasks(limit: number): $CancellablePromise<tasks$0.Task[] | n
  */
 export function ListVMs(): $CancellablePromise<hyperv$0.VM[] | null> {
     return $Call.ByID(3318166628);
+}
+
+/**
+ * ListVMsForHost 返回指定主机的虚拟机列表（用于新建/克隆时选择目标计算机）。
+ */
+export function ListVMsForHost(hostID: string): $CancellablePromise<hyperv$0.VM[] | null> {
+    return $Call.ByID(2282947269, hostID);
 }
 
 /**
@@ -255,17 +269,17 @@ export function SetEnhancedSession(enabled: boolean): $CancellablePromise<void> 
 }
 
 /**
- * SubmitClone 提交克隆任务。
+ * SubmitClone 提交克隆任务；hostID 为空时使用当前主机。
  */
-export function SubmitClone(req: hyperv$0.CloneRequest): $CancellablePromise<tasks$0.Task | null> {
-    return $Call.ByID(4050449855, req);
+export function SubmitClone(hostID: string, req: hyperv$0.CloneRequest): $CancellablePromise<tasks$0.Task | null> {
+    return $Call.ByID(4050449855, hostID, req);
 }
 
 /**
- * SubmitCreate 提交新建任务。
+ * SubmitCreate 提交新建任务；hostID 为空时使用当前主机。
  */
-export function SubmitCreate(req: hyperv$0.CreateRequest): $CancellablePromise<tasks$0.Task | null> {
-    return $Call.ByID(2606049294, req);
+export function SubmitCreate(hostID: string, req: hyperv$0.CreateRequest): $CancellablePromise<tasks$0.Task | null> {
+    return $Call.ByID(2606049294, hostID, req);
 }
 
 /**
@@ -294,6 +308,13 @@ export function SubmitPower(name: string, action: string): $CancellablePromise<t
  */
 export function SuggestCloneDirectory(sourceName: string): $CancellablePromise<string> {
     return $Call.ByID(1063840088, sourceName);
+}
+
+/**
+ * SuggestCloneDirectoryForHost 返回指定主机上源虚拟机的所在目录。
+ */
+export function SuggestCloneDirectoryForHost(hostID: string, sourceName: string): $CancellablePromise<string> {
+    return $Call.ByID(2243868401, hostID, sourceName);
 }
 
 /**

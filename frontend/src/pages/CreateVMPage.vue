@@ -9,13 +9,27 @@ import { HyperVService, errorMessage } from "../api";
 import type { CreateRequest, VirtualSwitch } from "../api";
 import { useAppStore } from "../stores/app";
 import { useTaskStore } from "../stores/tasks";
+import { useHostsStore } from "../stores/hosts";
 import { formatMB, switchTypeLabel } from "../utils/format";
 
 const router = useRouter();
 const message = useMessage();
 const app = useAppStore();
 const taskStore = useTaskStore();
-const isRemote = computed(() => app.isRemote);
+const hosts = useHostsStore();
+
+const targetHostID = ref("");
+const targetHost = computed(
+  () => hosts.items.find((item) => item.id === targetHostID.value) ?? app.activeHost
+);
+const isRemote = computed(() => !!targetHost.value && !targetHost.value.isLocal);
+const hostOptions = computed(() =>
+  hosts.items.map((item) => ({
+    label: `${item.name}${item.isLocal ? "（本机）" : "（" + item.address + "）"}${item.connected ? "" : " · 未连接"}`,
+    value: item.id,
+    disabled: !item.connected,
+  }))
+);
 
 const step = ref(0);
 const submitting = ref(false);
@@ -138,6 +152,10 @@ function previous() {
 }
 
 async function browseDirectory() {
+  if (isRemote.value) {
+    message.warning("目标主机是远程计算机，请手动输入远程主机上的绝对路径");
+    return;
+  }
   try {
     const dir = await HyperVService.PickDirectory("选择虚拟机存储目录");
     if (dir) form.directory = dir;
@@ -147,6 +165,10 @@ async function browseDirectory() {
 }
 
 async function browseImage() {
+  if (isRemote.value) {
+    message.warning("目标主机是远程计算机，请手动输入远程主机上的镜像路径");
+    return;
+  }
   try {
     const file = await HyperVService.PickFile("选择系统镜像", "虚拟硬盘", "*.vhdx;*.vhd");
     if (file) form.imagePath = file;
@@ -156,6 +178,10 @@ async function browseImage() {
 }
 
 async function browseISO() {
+  if (isRemote.value) {
+    message.warning("目标主机是远程计算机，请手动输入远程主机上的 ISO 路径");
+    return;
+  }
   try {
     const file = await HyperVService.PickFile("选择安装 ISO", "镜像文件", "*.iso");
     if (file) form.isoPath = file;
@@ -172,6 +198,15 @@ async function submit() {
       message.warning(error);
       return;
     }
+  }
+  const host = hosts.items.find((item) => item.id === targetHostID.value);
+  if (!host) {
+    message.warning("请选择目标计算机");
+    return;
+  }
+  if (!host.connected) {
+    message.warning("目标计算机尚未连接，请先到“计算机”页面连接");
+    return;
   }
 
   submitting.value = true;
@@ -195,8 +230,8 @@ async function submit() {
       isoPath: form.isoPath.trim(),
       disableCheckpoints: form.disableCheckpoints,
     };
-    const task = await HyperVService.SubmitCreate(request);
-    message.success(`新建任务已提交${task ? `（${task.id}）` : ""}`);
+    const task = await HyperVService.SubmitCreate(targetHostID.value, request);
+    message.success(`新建任务已提交到 ${host.name}${task ? `（${task.id}）` : ""}`);
     void taskStore.fetch();
     void router.push("/tasks");
   } catch (err) {
@@ -207,16 +242,32 @@ async function submit() {
 }
 
 async function loadSwitches() {
+  const hostID = targetHostID.value;
+  if (!hostID) {
+    switches.value = [];
+    return;
+  }
   try {
-    switches.value = (await HyperVService.ListSwitches()) ?? [];
+    switches.value = (await HyperVService.ListSwitchesForHost(hostID)) ?? [];
   } catch {
     switches.value = [];
   }
 }
 
-onMounted(() => {
+async function onTargetHostChange(value: string) {
+  targetHostID.value = value;
+  form.switchName = "";
+  await loadSwitches();
+}
+
+onMounted(async () => {
   applyDefaults();
-  void loadSwitches();
+  await hosts.fetch();
+  if (!targetHostID.value) {
+    targetHostID.value =
+      app.activeHost?.id || hosts.items.find((item) => item.isLocal)?.id || hosts.items[0]?.id || "";
+  }
+  await loadSwitches();
 });
 </script>
 
@@ -225,8 +276,8 @@ onMounted(() => {
     <n-button size="small" @click="router.push('/vms')">返回虚拟机列表</n-button>
   </PageHeader>
 
-  <n-alert v-if="isRemote" type="warning" class="inline-error" title="当前连接的是远程主机">
-    新建任务会在远程主机「{{ app.activeHost?.name }}」上执行。存储目录、镜像和 ISO
+  <n-alert v-if="isRemote" type="warning" class="inline-error" title="目标计算机是远程主机">
+    新建任务会在远程主机「{{ targetHost?.name }}」上执行。存储目录、镜像和 ISO
     必须填写该远程主机上的绝对路径，本机文件选择器已禁用。
   </n-alert>
 
@@ -260,6 +311,21 @@ onMounted(() => {
               </n-radio-group>
             </n-form-item>
           </div>
+          <n-form-item>
+            <template #label>
+              目标计算机
+              <HelpTip>
+                <p>新建任务会提交到所选计算机上执行，不会切换当前管理主机。</p>
+                <p>只有已经连接的主机可以被选择；未连接的主机请先到“计算机”页面连接。</p>
+              </HelpTip>
+            </template>
+            <n-select
+              v-model:value="targetHostID"
+              :options="hostOptions"
+              placeholder="选择目标计算机"
+              @update:value="onTargetHostChange"
+            />
+          </n-form-item>
           <n-form-item label="存储根目录">
             <div class="input-with-button">
               <n-input v-model:value="form.directory" placeholder="例如 D:\VMs" />
@@ -429,6 +495,10 @@ onMounted(() => {
 
     <div class="summary-card">
       <div class="summary-title">配置摘要</div>
+      <div class="summary-row">
+        <span class="key">目标计算机</span>
+        <span class="value">{{ targetHost?.name || "—" }}<template v-if="isRemote">（远程）</template></span>
+      </div>
       <div class="summary-row">
         <span class="key">名称</span>
         <span class="value">{{ form.name || "—" }}</span>
