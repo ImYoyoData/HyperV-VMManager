@@ -17,12 +17,18 @@ import type {
 import type { Task, TaskLog, Stats as TaskStats } from "../../bindings/hypervvmmanager/internal/tasks/models";
 import type { Settings } from "../../bindings/hypervvmmanager/internal/settings/models";
 import type { Status as APIStatus } from "../../bindings/hypervvmmanager/internal/httpapi/models";
+import type {
+  Item as HostItem,
+  Request as HostRequest,
+} from "../../bindings/hypervvmmanager/internal/hosts/models";
 
 export { HyperVService };
 export type {
   Bootstrap,
   VM,
   HostInfo,
+  HostItem,
+  HostRequest,
   VirtualSwitch,
   HostNetworkAdapter,
   EnhancedSessionStatus,

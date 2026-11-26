@@ -148,6 +148,9 @@ func (s *Store) Path() string { return s.path }
 // TasksPath 返回任务历史文件路径。
 func (s *Store) TasksPath() string { return filepath.Join(s.dataDir, "tasks.json") }
 
+// HostsPath 返回主机连接配置文件路径。
+func (s *Store) HostsPath() string { return filepath.Join(s.dataDir, "hosts.json") }
+
 func (s *Store) persist() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

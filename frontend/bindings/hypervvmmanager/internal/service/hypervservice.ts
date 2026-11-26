@@ -12,6 +12,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as hosts$0 from "../hosts/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as httpapi$0 from "../httpapi/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -26,6 +29,13 @@ import * as tasks$0 from "../tasks/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
+
+/**
+ * AddHost 新增远程主机配置（不连接）。
+ */
+export function AddHost(request: hosts$0.Request): $CancellablePromise<hosts$0.Item | null> {
+    return $Call.ByID(2726125507, request);
+}
 
 /**
  * AttachAPI 注入 HTTP API 服务（打破循环依赖）。
@@ -49,6 +59,13 @@ export function ClearFinishedTasks(): $CancellablePromise<number> {
 }
 
 /**
+ * ConnectHost 连接远程主机并设为当前主机；本机直接切换。
+ */
+export function ConnectHost(id: string, password: string): $CancellablePromise<hosts$0.Item | null> {
+    return $Call.ByID(1517649602, id, password);
+}
+
+/**
  * ConnectVM 打开 VMConnect 控制台。
  */
 export function ConnectVM(name: string): $CancellablePromise<void> {
@@ -67,6 +84,13 @@ export function CreateSwitch(req: hyperv$0.CreateSwitchRequest): $CancellablePro
  */
 export function GetAPIStatus(): $CancellablePromise<httpapi$0.Status> {
     return $Call.ByID(782810132);
+}
+
+/**
+ * GetActiveHost 返回当前主机。
+ */
+export function GetActiveHost(): $CancellablePromise<hosts$0.Item | null> {
+    return $Call.ByID(600607370);
 }
 
 /**
@@ -140,6 +164,13 @@ export function ListHostNetworkAdapters(): $CancellablePromise<hyperv$0.HostNetw
 }
 
 /**
+ * ListHosts 返回主机配置与连接状态。
+ */
+export function ListHosts(): $CancellablePromise<hosts$0.Item[] | null> {
+    return $Call.ByID(236862609);
+}
+
+/**
  * ListSwitches 返回虚拟交换机列表。
  */
 export function ListSwitches(): $CancellablePromise<hyperv$0.VirtualSwitch[] | null> {
@@ -182,6 +213,13 @@ export function PickFile(title: string, filterName: string, filterPattern: strin
 }
 
 /**
+ * RemoveHost 删除远程主机配置并断开缓存。
+ */
+export function RemoveHost(id: string): $CancellablePromise<void> {
+    return $Call.ByID(478222592, id);
+}
+
+/**
  * RemoveSwitch 删除虚拟交换机。
  */
 export function RemoveSwitch(name: string): $CancellablePromise<void> {
@@ -200,6 +238,13 @@ export function RestartElevated(): $CancellablePromise<void> {
  */
 export function SaveSettings(value: settings$0.Settings): $CancellablePromise<settings$0.Settings | null> {
     return $Call.ByID(2012369394, value);
+}
+
+/**
+ * SetActiveHost 切换到已连接的主机。
+ */
+export function SetActiveHost(id: string): $CancellablePromise<hosts$0.Item | null> {
+    return $Call.ByID(1380737782, id);
 }
 
 /**
@@ -249,4 +294,11 @@ export function SubmitPower(name: string, action: string): $CancellablePromise<t
  */
 export function SuggestCloneDirectory(sourceName: string): $CancellablePromise<string> {
     return $Call.ByID(1063840088, sourceName);
+}
+
+/**
+ * UpdateHost 修改远程主机配置。
+ */
+export function UpdateHost(request: hosts$0.Request): $CancellablePromise<hosts$0.Item | null> {
+    return $Call.ByID(2772663605, request);
 }

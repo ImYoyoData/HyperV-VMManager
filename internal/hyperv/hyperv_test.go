@@ -75,6 +75,7 @@ func TestScriptSyntax(t *testing.T) {
 		"editVM":        editVMScript,
 		"deleteVM":      deleteVMScript,
 		"environment":   environmentScript,
+		"remoteWrapper": remoteWrapperScript,
 	}
 
 	for name, body := range scripts {

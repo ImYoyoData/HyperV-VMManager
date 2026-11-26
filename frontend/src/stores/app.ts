@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { HyperVService, errorMessage } from "../api";
-import type { Bootstrap, HostInfo, Settings, APIStatus } from "../api";
+import type { Bootstrap, HostInfo, HostItem, Settings, APIStatus } from "../api";
 
 export const useAppStore = defineStore("app", {
   state: () => ({
@@ -10,6 +10,7 @@ export const useAppStore = defineStore("app", {
     isAdmin: false,
     dataDir: "",
     hostInfo: null as HostInfo | null,
+    activeHost: null as HostItem | null,
     hostError: "",
     vmError: "",
     vmCount: 0,
@@ -21,6 +22,8 @@ export const useAppStore = defineStore("app", {
   }),
   getters: {
     hostName: (state) => state.hostInfo?.computerName || "本机",
+    isRemote: (state) => !!state.activeHost && !state.activeHost.isLocal,
+    hostLabel: (state) => state.activeHost?.name || "本机",
     apiBaseURL: (state) =>
       state.settings && state.settings.api
         ? `http://${state.settings.api.listenAddress}:${state.settings.api.port}`
@@ -47,6 +50,7 @@ export const useAppStore = defineStore("app", {
       this.isAdmin = data.isAdmin;
       this.dataDir = data.dataDir;
       this.hostInfo = data.hostInfo ?? null;
+      this.activeHost = data.activeHost ?? null;
       this.hostError = data.hostError ?? "";
       this.vmError = data.vmError ?? "";
       this.vmCount = data.vmCount;

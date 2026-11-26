@@ -6,8 +6,8 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"hypervvmmanager/internal/hosts"
 	"hypervvmmanager/internal/httpapi"
-	"hypervvmmanager/internal/hyperv"
 	"hypervvmmanager/internal/service"
 	"hypervvmmanager/internal/settings"
 	"hypervvmmanager/internal/tasks"
@@ -33,8 +33,12 @@ func main() {
 		log.Fatalf("无法加载任务历史: %v", err)
 	}
 
-	client := hyperv.NewClient()
-	svc := service.New(client, queue, store)
+	hostStore, err := hosts.NewStore(store.HostsPath())
+	if err != nil {
+		log.Fatalf("无法加载主机配置: %v", err)
+	}
+
+	svc := service.New(queue, store, hostStore)
 	api := httpapi.New(svc)
 	svc.AttachAPI(api)
 

@@ -19,6 +19,7 @@ export interface Stats {
 export interface Task {
     "id": string;
     "kind": string;
+    "hostID"?: string;
     "target": string;
     "status": string;
     "progress": number;

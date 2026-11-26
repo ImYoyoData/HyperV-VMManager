@@ -15,6 +15,7 @@ const router = useRouter();
 const message = useMessage();
 const app = useAppStore();
 const taskStore = useTaskStore();
+const isRemote = computed(() => app.isRemote);
 
 const step = ref(0);
 const submitting = ref(false);
@@ -224,6 +225,11 @@ onMounted(() => {
     <n-button size="small" @click="router.push('/vms')">返回虚拟机列表</n-button>
   </PageHeader>
 
+  <n-alert v-if="isRemote" type="warning" class="inline-error" title="当前连接的是远程主机">
+    新建任务会在远程主机「{{ app.activeHost?.name }}」上执行。存储目录、镜像和 ISO
+    必须填写该远程主机上的绝对路径，本机文件选择器已禁用。
+  </n-alert>
+
   <n-steps :current="step" size="small" style="margin-bottom: 18px">
     <n-step title="基本信息" description="名称、代数与位置" />
     <n-step title="磁盘与镜像" description="硬盘来源与安装介质" />
@@ -257,7 +263,7 @@ onMounted(() => {
           <n-form-item label="存储根目录">
             <div class="input-with-button">
               <n-input v-model:value="form.directory" placeholder="例如 D:\VMs" />
-              <n-button size="small" @click="browseDirectory">
+              <n-button size="small" :disabled="isRemote" @click="browseDirectory">
                 <template #icon>
                   <n-icon :component="FolderOutline" />
                 </template>
@@ -296,7 +302,7 @@ onMounted(() => {
           <n-form-item v-else :label="form.diskMode === 'differencing' ? '父盘镜像（.vhdx / .vhd）' : '系统镜像（.vhdx / .vhd）'">
             <div class="input-with-button">
               <n-input v-model:value="form.imagePath" placeholder="选择已有的虚拟硬盘文件" />
-              <n-button size="small" @click="browseImage">
+              <n-button size="small" :disabled="isRemote" @click="browseImage">
                 <template #icon>
                   <n-icon :component="ServerOutline" />
                 </template>
@@ -315,7 +321,7 @@ onMounted(() => {
             </template>
             <div class="input-with-button">
               <n-input v-model:value="form.isoPath" placeholder="选择系统安装 ISO，留空则不挂载" />
-              <n-button size="small" @click="browseISO">
+              <n-button size="small" :disabled="isRemote" @click="browseISO">
                 <template #icon>
                   <n-icon :component="AddCircleOutline" />
                 </template>

@@ -36,6 +36,7 @@ type TaskLog struct {
 type Task struct {
 	ID         string         `json:"id"`
 	Kind       string         `json:"kind"`
+	HostID     string         `json:"hostID,omitempty"`
 	Target     string         `json:"target"`
 	Status     string         `json:"status"`
 	Progress   int            `json:"progress"`

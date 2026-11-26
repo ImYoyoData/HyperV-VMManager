@@ -3,6 +3,9 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as hosts$0 from "../hosts/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as httpapi$0 from "../httpapi/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -28,6 +31,7 @@ export interface Bootstrap {
     "dataDir": string;
     "api": httpapi$0.Status;
     "taskStats": tasks$0.Stats;
+    "activeHost"?: hosts$0.Item | null;
     "appVersion": string;
     "wailsVersion": string;
 }

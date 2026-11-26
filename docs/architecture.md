@@ -114,7 +114,9 @@ queued ──开始执行──> running ──成功──> succeeded
 
 ```
 GET    /api/v1/health                  健康检查
-GET    /api/v1/host                    主机信息
+GET    /api/v1/hosts                   计算机列表（本机 / 远程）
+POST   /api/v1/hosts/{id}/connect      连接并切换当前计算机
+GET    /api/v1/host                    当前主机信息
 GET    /api/v1/vms                     虚拟机列表
 GET    /api/v1/vms/{name}              虚拟机详情
 POST   /api/v1/vms                     新建虚拟机（异步任务）

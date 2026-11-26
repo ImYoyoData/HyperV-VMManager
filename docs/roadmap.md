@@ -3,7 +3,23 @@
 本文档记录尚未实现、但已经确定方向的能力。目标是让后续开发在不破坏现有任务队列与
 API 语义的前提下逐步接入。
 
-## 1. 多主机连接（本机 / 远程 Hyper-V）
+## 1. 多主机连接（基础版已实现）
+
+**已实现：**
+
+- 新增“计算机”页面：本机 / 远程主机列表、添加、编辑、删除、连接与切换。
+- `hosts.json` 持久化主机配置（不保存密码）；密码只保存在应用内存中。
+- 远程执行通过 WinRM：`New-PSSession` + `Invoke-Command`，复用同一套 PowerShell 脚本协议。
+- 任务对象与 payload 增加 `hostID`；任务执行时使用提交时绑定的主机，切换当前主机不影响已排队任务。
+- API 增加 `GET /api/v1/hosts` 与 `POST /api/v1/hosts/{id}/connect`，之后提交类接口作用于当前主机。
+- 远程模式下禁用本机文件选择器，镜像/ISO/目录需要填写远程主机上的绝对路径。
+
+**待完善：**
+
+- 使用 DPAPI 保存密码（当前每次启动需要重新输入）。
+- 远程目录浏览（通过远端 `Get-ChildItem`）。
+- 提交类 API 支持显式 `hostId`，避免依赖全局“当前主机”。
+- 远程主机的环境检查、增强会话与本地工具的边界说明（当前增强会话配置会作用在远程主机上）。
 
 ### 1.1 数据模型
 
@@ -83,14 +99,16 @@ try {
 
 ### 1.4 API 与任务绑定
 
-- `Task` 增加 `HostID`，任务执行器根据 `HostID` 选择 `Executor`。
-- API 增加：
+- 任务已增加 `hostID`，任务执行器根据 `hostID` 选择 `Executor`。
+- 已实现：
   - `GET /api/v1/hosts`
-  - `POST /api/v1/hosts`（新增连接配置）
-  - `POST /api/v1/hosts/{id}/test`（测试 WinRM 与 Hyper-V 权限）
+  - `POST /api/v1/hosts/{id}/connect`（连接并切换当前主机）
+- 待实现：
+  - `POST /api/v1/hosts`（通过 API 新增连接配置）
+  - `POST /api/v1/hosts/{id}/test`
   - `GET /api/v1/hosts/{id}/vms`
-  - 提交类接口支持 `hostId` 字段或 `X-HyperV-Host` 头。
-- 对现有单主机 API 保持兼容：不传 `hostId` 时使用当前连接的主机（默认本机）。
+  - 提交类接口显式支持 `hostId` 字段或 `X-HyperV-Host` 头。
+- 当前提交类接口作用于“当前主机”，与 GUI 共用同一状态。
 
 ## 2. 端口映射
 

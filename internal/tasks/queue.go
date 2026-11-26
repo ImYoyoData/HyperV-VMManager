@@ -105,8 +105,13 @@ func (q *Queue) Stop() {
 	q.wg.Wait()
 }
 
-// Submit 提交任务，返回排队中的任务快照。
+// Submit 提交任务（默认本机），返回排队中的任务快照。
 func (q *Queue) Submit(kind, target string, payload any) (*Task, error) {
+	return q.SubmitForHost("", kind, target, payload)
+}
+
+// SubmitForHost 提交绑定到指定主机的任务。
+func (q *Queue) SubmitForHost(hostID, kind, target string, payload any) (*Task, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("无法序列化任务参数: %w", err)
@@ -122,6 +127,7 @@ func (q *Queue) Submit(kind, target string, payload any) (*Task, error) {
 	task := &Task{
 		ID:        q.newIDLocked(now),
 		Kind:      kind,
+		HostID:    hostID,
 		Target:    target,
 		Status:    StatusQueued,
 		Step:      "排队等待执行",

@@ -10,6 +10,12 @@ const router = createRouter({
       meta: { title: "总览" },
     },
     {
+      path: "/hosts",
+      name: "hosts",
+      component: () => import("./pages/HostsPage.vue"),
+      meta: { title: "计算机" },
+    },
+    {
       path: "/vms",
       name: "vms",
       component: () => import("./pages/VirtualMachinesPage.vue"),

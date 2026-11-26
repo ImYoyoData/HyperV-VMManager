@@ -12,6 +12,7 @@ import {
   GitNetworkOutline,
   GridOutline,
   ListOutline,
+  ServerOutline,
   SettingsOutline,
   ShieldCheckmarkOutline,
 } from "@vicons/ionicons5";
@@ -47,6 +48,11 @@ const menuOptions = computed<MenuOption[]>(() => [
     label: "总览",
     key: "/",
     icon: renderIcon(GridOutline),
+  },
+  {
+    label: "计算机",
+    key: "/hosts",
+    icon: renderIcon(ServerOutline),
   },
   { type: "divider", key: "divider-1" },
   {
@@ -128,6 +134,7 @@ function notifyTaskFinished(task: Task) {
 }
 
 let offTaskFinished: (() => void) | undefined;
+let offHostChanged: (() => void) | undefined;
 
 onMounted(async () => {
   taskStore.bindEvents();
@@ -135,6 +142,12 @@ onMounted(async () => {
     if (event?.data) {
       notifyTaskFinished(event.data);
     }
+  });
+  offHostChanged = Events.On("host:changed", async () => {
+    await app.init();
+    await vmStore.fetch();
+    await taskStore.fetch();
+    await setup.check();
   });
 
   try {
@@ -153,6 +166,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   offTaskFinished?.();
+  offHostChanged?.();
 });
 
 async function restartElevated() {
@@ -198,6 +212,28 @@ async function restartElevated() {
     </aside>
 
     <main class="main">
+      <div class="host-bar">
+        <span
+          class="status-dot"
+          :class="app.activeHost?.connected ? 'ok' : 'idle'"
+        ></span>
+        <span class="host-bar-caption">当前主机</span>
+        <span class="host-bar-name">{{ app.activeHost?.name || "本机" }}</span>
+        <span
+          v-if="app.activeHost && !app.activeHost.isLocal"
+          class="host-bar-address mono-text"
+        >
+          {{ app.activeHost.address }}
+        </span>
+        <span v-if="app.activeHost && !app.activeHost.connected" class="cell-muted">
+          （未连接）
+        </span>
+        <span class="spacer"></span>
+        <n-button size="tiny" quaternary @click="router.push('/hosts')">
+          切换计算机
+        </n-button>
+      </div>
+
       <div v-if="app.loaded && !app.isAdmin" class="admin-banner">
         <span>
           当前进程不是以管理员身份运行。查看虚拟机可能受限，启动 / 克隆 / 新建 / 删除等操作会失败。
@@ -283,6 +319,35 @@ async function restartElevated() {
   height: 2px;
   overflow: hidden;
   margin-bottom: -2px;
+}
+
+.host-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--border-soft);
+  background: #0d1015;
+  font-size: 12px;
+  color: #aeb8c9;
+}
+
+.host-bar-caption {
+  color: var(--muted);
+}
+
+.host-bar-name {
+  color: #e8ecf4;
+  font-weight: 500;
+}
+
+.host-bar-address {
+  font-size: 11px;
+  color: #6f7a8d;
+}
+
+.host-bar .spacer {
+  flex: 1;
 }
 
 .app-loading-bar :deep(.n-progress) {

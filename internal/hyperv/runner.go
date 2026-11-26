@@ -9,15 +9,46 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 )
 
-// Client 封装对 Hyper-V PowerShell 模块的调用。
-// 每个方法都在独立的 powershell.exe 进程中运行，不依赖全局会话状态。
-type Client struct{}
+// Target 描述当前要操作的 Hyper-V 主机。ComputerName 为空表示本机。
+type Target struct {
+	ID             string
+	Name           string
+	ComputerName   string
+	Port           int
+	UseSSL         bool
+	Username       string
+	Password       string
+	Authentication string
+}
 
-func NewClient() *Client { return &Client{} }
+func LocalTarget() Target {
+	return Target{ID: "local", Name: "本机"}
+}
+
+func (t Target) IsLocal() bool {
+	return strings.TrimSpace(t.ComputerName) == ""
+}
+
+// Client 封装对 Hyper-V PowerShell 模块的调用。
+// 本机直接运行 powershell.exe；远程通过 WinRM (Invoke-Command) 执行同一段脚本。
+type Client struct {
+	target Target
+}
+
+func NewClient() *Client {
+	return &Client{target: LocalTarget()}
+}
+
+func NewClientForTarget(target Target) *Client {
+	return &Client{target: target}
+}
+
+func (c *Client) Target() Target { return c.target }
 
 const createNoWindow = 0x08000000
 
@@ -28,6 +59,7 @@ const createNoWindow = 0x08000000
 //
 // 使用 base64 是为了绕开 Windows PowerShell 5.1 的控制台代码页问题，
 // 保证中文名称、中文错误消息都不会乱码。
+// 远程模式（HV_REMOTE=1）下使用 Write-Output，让 Invoke-Command 把结果带回本地。
 const scriptPreamble = `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
@@ -37,11 +69,13 @@ if ($env:HV_OPTS) {
 }
 function Write-HvResult($obj) {
   $json = ConvertTo-Json -InputObject $obj -Depth 12 -Compress
-  [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)))
+  $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+  if ($env:HV_REMOTE -eq '1') { Write-Output $b64 } else { [Console]::Out.Write($b64) }
 }
 function Write-HvError($msg) {
   $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$msg"))
-  [Console]::Out.Write("HVFAIL:$b64")
+  $line = "HVFAIL:$b64"
+  if ($env:HV_REMOTE -eq '1') { Write-Output $line } else { [Console]::Out.Write($line) }
 }
 try {
 `
@@ -49,20 +83,100 @@ try {
 const scriptFooter = `
 } catch {
   Write-HvError $_.Exception.Message
-  exit 1
+  return
 }
 `
 
-// run 执行一段 PowerShell 脚本并解析结果。
-// opts 会以 Base64 JSON 的形式传给脚本内的 $opts；out 为 nil 时不解析返回值。
-func (c *Client) run(ctx context.Context, body string, opts any, out any) error {
-	envValue := ""
-	if opts != nil {
-		payload, err := json.Marshal(opts)
-		if err != nil {
-			return fmt.Errorf("无法序列化脚本参数: %w", err)
+func buildScript(body string, withBOM bool) string {
+	script := scriptPreamble + body + scriptFooter
+	if withBOM {
+		return "\uFEFF" + script
+	}
+	return script
+}
+
+// remoteWrapperScript 在本地执行：建立 WinRM 会话，把目标脚本送到远程主机执行。
+const remoteWrapperScript = `$ErrorActionPreference = 'Stop'
+$sessionParams = @{ ComputerName = $env:HV_HOST; ErrorAction = 'Stop' }
+if ($env:HV_PORT) { $sessionParams.Port = [int]$env:HV_PORT }
+if ($env:HV_SSL -eq '1') {
+  $sessionParams.UseSSL = $true
+  $sessionParams.SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
+}
+if ($env:HV_AUTH) { $sessionParams.Authentication = $env:HV_AUTH }
+if ($env:HV_USER) {
+  $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:HV_PASS))
+  $secure = ConvertTo-SecureString $password -AsPlainText -Force
+  $sessionParams.Credential = New-Object System.Management.Automation.PSCredential($env:HV_USER, $secure)
+}
+$session = $null
+try {
+  $session = New-PSSession @sessionParams
+  $scriptText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:HV_SCRIPT))
+  $output = Invoke-Command -Session $session -ScriptBlock {
+    param($scriptText, $opts)
+    $env:HV_OPTS = $opts
+    $env:HV_REMOTE = '1'
+    Invoke-Expression $scriptText
+  } -ArgumentList $scriptText, $env:HV_OPTS
+  $last = @($output) | Select-Object -Last 1
+  if ($null -ne $last) { [Console]::Out.Write([string]$last) }
+} catch {
+  [Console]::Error.Write($_.Exception.Message)
+  exit 1
+} finally {
+  if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
+}
+`
+
+func encodeOptions(opts any) (string, error) {
+	if opts == nil {
+		return "", nil
+	}
+	payload, err := json.Marshal(opts)
+	if err != nil {
+		return "", fmt.Errorf("无法序列化脚本参数: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(payload), nil
+}
+
+func parseOutput(raw string, out any) error {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "HVFAIL:") {
+		message := strings.TrimPrefix(raw, "HVFAIL:")
+		if decoded, decErr := base64.StdEncoding.DecodeString(message); decErr == nil {
+			message = string(decoded)
 		}
-		envValue = base64.StdEncoding.EncodeToString(payload)
+		if strings.TrimSpace(message) == "" {
+			message = "Hyper-V 操作失败"
+		}
+		return errors.New(strings.TrimSpace(message))
+	}
+	if raw == "" || out == nil {
+		return nil
+	}
+	payload, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return fmt.Errorf("无法解析 PowerShell 输出: %w", err)
+	}
+	if err := json.Unmarshal(payload, out); err != nil {
+		return fmt.Errorf("无法解析 PowerShell 返回的数据: %w", err)
+	}
+	return nil
+}
+
+// run 执行脚本并解析结果。远程目标会通过 WinRM 在目标主机上执行。
+func (c *Client) run(ctx context.Context, body string, opts any, out any) error {
+	if c.target.IsLocal() {
+		return c.runLocal(ctx, body, opts, out)
+	}
+	return c.runRemote(ctx, body, opts, out)
+}
+
+func (c *Client) runLocal(ctx context.Context, body string, opts any, out any) error {
+	envValue, err := encodeOptions(opts)
+	if err != nil {
+		return err
 	}
 
 	tmp, err := os.CreateTemp("", "hyperv-vmmanager-*.ps1")
@@ -72,8 +186,7 @@ func (c *Client) run(ctx context.Context, body string, opts any, out any) error 
 	defer os.Remove(tmp.Name())
 
 	// UTF-8 BOM 是 Windows PowerShell 5.1 正确识别 UTF-8 脚本的前提。
-	script := "\uFEFF" + scriptPreamble + body + scriptFooter
-	if _, err := tmp.WriteString(script); err != nil {
+	if _, err := tmp.WriteString(buildScript(body, true)); err != nil {
 		tmp.Close()
 		return fmt.Errorf("无法写入临时脚本: %w", err)
 	}
@@ -91,42 +204,94 @@ func (c *Client) run(ctx context.Context, body string, opts any, out any) error 
 	cmd.Stderr = &stderr
 
 	runErr := cmd.Run()
-	raw := strings.TrimSpace(stdout.String())
-
-	if strings.HasPrefix(raw, "HVFAIL:") {
-		message := strings.TrimPrefix(raw, "HVFAIL:")
-		if decoded, decErr := base64.StdEncoding.DecodeString(message); decErr == nil {
-			message = string(decoded)
-		}
-		if strings.TrimSpace(message) == "" {
-			message = "Hyper-V 操作失败"
-		}
-		return errors.New(strings.TrimSpace(message))
-	}
-
 	if runErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = runErr.Error()
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return errors.New(detail)
 		}
-		return errors.New(detail)
 	}
+	return parseOutput(stdout.String(), out)
+}
 
-	if raw == "" || out == nil {
-		return nil
-	}
-
-	payload, err := base64.StdEncoding.DecodeString(raw)
+func (c *Client) runRemote(ctx context.Context, body string, opts any, out any) error {
+	optsValue, err := encodeOptions(opts)
 	if err != nil {
-		return fmt.Errorf("无法解析 PowerShell 输出: %w", err)
+		return err
 	}
-	if err := json.Unmarshal(payload, out); err != nil {
-		return fmt.Errorf("无法解析 PowerShell 返回的数据: %w", err)
+	script := buildScript(body, false)
+
+	tmp, err := os.CreateTemp("", "hyperv-vmmanager-remote-*.ps1")
+	if err != nil {
+		return fmt.Errorf("无法创建临时脚本: %w", err)
 	}
-	return nil
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString("\uFEFF" + remoteWrapperScript); err != nil {
+		tmp.Close()
+		return fmt.Errorf("无法写入临时脚本: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("无法关闭临时脚本: %w", err)
+	}
+
+	port := c.target.Port
+	if port <= 0 {
+		if c.target.UseSSL {
+			port = 5986
+		} else {
+			port = 5985
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", tmp.Name())
+	cmd.Env = append(os.Environ(),
+		"HV_SCRIPT="+base64.StdEncoding.EncodeToString([]byte(script)),
+		"HV_OPTS="+optsValue,
+		"HV_HOST="+c.target.ComputerName,
+		"HV_PORT="+strconv.Itoa(port),
+		"HV_SSL="+boolFlag(c.target.UseSSL),
+		"HV_USER="+c.target.Username,
+		"HV_PASS="+base64.StdEncoding.EncodeToString([]byte(c.target.Password)),
+		"HV_AUTH="+c.target.Authentication,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	runErr := cmd.Run()
+	if runErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("连接远程主机 %s 失败: %s", c.target.ComputerName, detail)
+		}
+		return fmt.Errorf("连接远程主机 %s 失败: %w", c.target.ComputerName, runErr)
+	}
+	return parseOutput(stdout.String(), out)
+}
+
+func boolFlag(value bool) string {
+	if value {
+		return "1"
+	}
+	return "0"
+}
+
+// TestConnection 验证远程 WinRM 连接与 Hyper-V 权限，然后返回主机信息。
+func (c *Client) TestConnection(ctx context.Context) (*HostInfo, error) {
+	body := `
+$vh = Get-VMHost -ErrorAction Stop
+Write-HvResult ([ordered]@{ name = "$env:COMPUTERNAME"; version = "$($vh.Version)" })
+`
+	if err := c.run(ctx, body, nil, nil); err != nil {
+		return nil, err
+	}
+	return c.HostInfo(ctx)
 }
 
 // IsAdmin 判断当前进程是否具有管理员权限。
@@ -142,7 +307,7 @@ func startDetached(name string, args ...string) error {
 	return cmd.Start()
 }
 
-// OpenTool 打开系统中的管理工具。
+// OpenTool 打开系统中的管理工具（始终作用于本机）。
 func (c *Client) OpenTool(tool string) error {
 	var target string
 	switch tool {
@@ -164,10 +329,14 @@ func (c *Client) OpenTool(tool string) error {
 	return startDetached("cmd", "/c", "start", "", target)
 }
 
-// ConnectVM 使用 VMConnect 打开虚拟机控制台。
+// ConnectVM 使用 VMConnect 打开虚拟机控制台；远程主机使用 host name 形式。
 func (c *Client) ConnectVM(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("虚拟机名称不能为空")
 	}
-	return startDetached("vmconnect.exe", "localhost", name)
+	server := "localhost"
+	if !c.target.IsLocal() {
+		server = c.target.ComputerName
+	}
+	return startDetached("vmconnect.exe", server, name)
 }

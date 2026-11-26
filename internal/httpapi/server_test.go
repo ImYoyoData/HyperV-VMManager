@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"hypervvmmanager/internal/hosts"
 	"hypervvmmanager/internal/httpapi"
 	"hypervvmmanager/internal/hyperv"
 	"hypervvmmanager/internal/tasks"
@@ -29,6 +30,14 @@ func (f *fakeBackend) GetVM(name string) (*hyperv.VM, error) {
 
 func (f *fakeBackend) GetHostInfo() (*hyperv.HostInfo, error) {
 	return &hyperv.HostInfo{ComputerName: "TEST"}, nil
+}
+
+func (f *fakeBackend) ListHosts() ([]hosts.Item, error) {
+	return []hosts.Item{{ID: "local", Name: "本机", IsLocal: true, Connected: true, Active: true}}, nil
+}
+
+func (f *fakeBackend) ConnectHost(id string, password string) (*hosts.Item, error) {
+	return &hosts.Item{ID: id, Connected: true, Active: true}, nil
 }
 
 func (f *fakeBackend) ListSwitches() ([]hyperv.VirtualSwitch, error) {
@@ -138,6 +147,27 @@ func TestHTTPAPIAuth(t *testing.T) {
 	response, body := doRequest(t, http.MethodGet, base+"/api/v1/health", "secret-token", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("健康检查应返回 200，实际 %d：%s", response.StatusCode, body)
+	}
+}
+
+func TestHTTPAPIHosts(t *testing.T) {
+	_, base, shutdown := startServer(t)
+	defer shutdown()
+
+	response, body := doRequest(t, http.MethodGet, base+"/api/v1/hosts", "secret-token", nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("主机列表应返回 200，实际 %d：%s", response.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"local"`) {
+		t.Fatalf("主机列表内容不正确: %s", body)
+	}
+
+	response, body = doRequest(t, http.MethodPost, base+"/api/v1/hosts/host-1/connect", "secret-token", map[string]string{"password": "secret"})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("连接主机应返回 200，实际 %d：%s", response.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"active":true`) {
+		t.Fatalf("连接结果不正确: %s", body)
 	}
 }
 

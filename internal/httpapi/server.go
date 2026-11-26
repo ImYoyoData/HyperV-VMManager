@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"hypervvmmanager/internal/hosts"
 	"hypervvmmanager/internal/hyperv"
 	"hypervvmmanager/internal/tasks"
 )
@@ -39,6 +40,9 @@ type Backend interface {
 	GetHostInfo() (*hyperv.HostInfo, error)
 	ListSwitches() ([]hyperv.VirtualSwitch, error)
 	SuggestCloneDirectory(sourceName string) (string, error)
+
+	ListHosts() ([]hosts.Item, error)
+	ConnectHost(id string, password string) (*hosts.Item, error)
 
 	SubmitCreate(req hyperv.CreateRequest) (*tasks.Task, error)
 	SubmitClone(req hyperv.CloneRequest) (*tasks.Task, error)
@@ -99,7 +103,7 @@ func (s *Server) Apply(cfg Config) Status {
 		Handler:           s.withAuth(s.routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      150 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
@@ -175,6 +179,33 @@ func (s *Server) routes() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, info)
+	})
+
+	mux.HandleFunc("GET /api/v1/hosts", func(w http.ResponseWriter, r *http.Request) {
+		items, err := s.backend.ListHosts()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	})
+
+	mux.HandleFunc("POST /api/v1/hosts/{id}/connect", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Password string `json:"password"`
+		}
+		if r.ContentLength > 0 {
+			if err := decodeJSON(w, r, &body); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		item, err := s.backend.ConnectHost(r.PathValue("id"), body.Password)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	})
 
 	mux.HandleFunc("GET /api/v1/vms", func(w http.ResponseWriter, r *http.Request) {

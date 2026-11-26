@@ -23,6 +23,7 @@ const switches = ref<VirtualSwitch[]>([]);
 const submitting = ref(false);
 const loadingPath = ref(false);
 const defaultsApplied = ref(false);
+const isRemote = computed(() => app.isRemote);
 
 const form = reactive({
   sourceName: "",
@@ -210,6 +211,11 @@ onMounted(() => {
     <n-button size="small" @click="router.push('/vms')">返回虚拟机列表</n-button>
   </PageHeader>
 
+  <n-alert v-if="isRemote" type="warning" class="inline-error" title="当前连接的是远程主机">
+    克隆任务会在远程主机「{{ app.activeHost?.name }}」上执行。目标目录必须是该远程主机上的绝对路径，
+    且需要足够的磁盘空间用于导出和导入。
+  </n-alert>
+
   <n-alert v-if="vmStore.error" type="warning" class="inline-error" title="无法读取虚拟机列表">
     {{ vmStore.error }}
   </n-alert>
@@ -273,7 +279,7 @@ onMounted(() => {
           </template>
           <div class="input-with-button">
             <n-input v-model:value="form.targetDirectory" placeholder="例如 D:\VMs" />
-            <n-button size="small" :loading="loadingPath" @click="browseDirectory">
+            <n-button size="small" :loading="loadingPath" :disabled="isRemote" @click="browseDirectory">
               <template #icon>
                 <n-icon :component="FolderOutline" />
               </template>

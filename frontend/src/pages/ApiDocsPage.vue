@@ -48,10 +48,36 @@ const groups: ApiGroup[] = [
       },
       {
         method: "GET",
-        path: "/api/v1/host",
-        title: "主机信息",
+        path: "/api/v1/hosts",
+        title: "计算机列表",
         description:
-          "返回 Hyper-V 主机名、操作系统、Hyper-V 版本、CPU、内存、默认虚拟机目录与增强会话状态。",
+          "返回已配置的本机与远程 Hyper-V 主机、连接状态、当前主机。远程主机需要先成功连接。",
+        response: `{"items":[{"id":"local","name":"本机","isLocal":true,"connected":true,"active":true},{"id":"host-7f3a","name":"实验室 Hyper-V","address":"192.168.1.20","connected":false,"active":false}]}`,
+      },
+      {
+        method: "POST",
+        path: "/api/v1/hosts/{id}/connect",
+        title: "连接并切换计算机",
+        description:
+          "建立 WinRM 会话并验证 Get-VMHost 权限，成功后把该主机设为当前主机。密码仅本次请求使用，不写入磁盘。之后所有提交类接口都作用于当前主机。",
+        params: [
+          { name: "id", type: "string（路径）", required: "是", description: "计算机 ID（local 表示本机）" },
+        ],
+        body: [
+          { name: "password", type: "string", required: "条件", description: "远程 Windows 账户密码；用户名为空或使用当前凭据时可省略" },
+        ],
+        response: `200 OK，返回连接后的主机对象，active=true`,
+        example: `curl -X POST "http://127.0.0.1:17890/api/v1/hosts/host-7f3a/connect" \\
+  -H "Authorization: Bearer <token>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"password":"<password>"}'`,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/host",
+        title: "当前主机信息",
+        description:
+          "返回当前主机名、操作系统、Hyper-V 版本、CPU、内存、默认虚拟机目录与增强会话状态。",
         response: `{"computerName":"YOYO","osName":"Windows 11 Pro 10.0.26100","hyperVVersion":"2.0.0.0","logicalProcessors":16,"totalMemoryMB":32768,"enhancedSessionEnabled":true,...}`,
       },
       {
@@ -269,6 +295,7 @@ const token = computed(() => app.settings?.api.token || "<token>");
 const taskFields: ApiParam[] = [
   { name: "id", type: "string", description: "任务 ID，用于后续查询" },
   { name: "kind", type: "string", description: "clone | create | edit | delete | power" },
+  { name: "hostID", type: "string", description: "提交任务时绑定的主机 ID（local 表示本机）" },
   { name: "target", type: "string", description: "目标虚拟机名称" },
   { name: "status", type: "string", description: "queued | running | succeeded | failed | canceled" },
   { name: "progress", type: "number", description: "进度百分比 0-100" },
@@ -356,9 +383,15 @@ async function copyText(value: string) {
       所有写操作共用一个串行队列：同一时间只执行一个克隆/新建/删除，避免导出、导入和磁盘复制相互干扰。
       提交任务时如果同一目标已有未完成的同类任务，会返回 400。
     </n-alert>
+    <n-alert type="info" :show-icon="true" style="margin-top: 12px">
+      当前 API 操作的是“当前主机”。先通过 <span class="mono-text">GET /api/v1/hosts</span> 查看计算机，
+      再用 <span class="mono-text">POST /api/v1/hosts/{id}/connect</span> 连接并切换，
+      之后新建、克隆、编辑、删除、电源操作都会作用于该主机。远程主机需要启用 WinRM，
+      并且账户具备 Hyper-V 管理权限。
+    </n-alert>
     <n-alert type="warning" :show-icon="true" style="margin-top: 10px">
-      当前版本 API 只操作本机 Hyper-V。多主机连接（远程 Hyper-V 服务器）将在后续版本加入
-      hostId 或 /hosts 接口；届时提交任务时需携带目标计算机标识。
+      连接远程主机时，虚拟机目录、镜像和 ISO 必须填写远程主机上的绝对路径；本机文件选择器不可用。
+      远程密码只保存在应用进程内存中，不会写入磁盘。
     </n-alert>
   </div>
 
