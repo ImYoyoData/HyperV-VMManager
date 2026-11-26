@@ -46,6 +46,44 @@ func TestEvaluateEnvironmentReady(t *testing.T) {
 	}
 }
 
+func TestEvaluateEnvironmentSlatUnknownButHypervisorRunning(t *testing.T) {
+	// 用户机器上 Hyper-V 已运行，但 WMI 可能报告 SLAT=false。
+	// 这种情况不能判定为不支持。
+	raw := baseRawEnvironment()
+	raw.SLATSupported = false
+	raw.HypervisorPresent = true
+	raw.VirtualizationFirmwareEnabled = false
+
+	status := evaluateEnvironment(raw)
+	if !status.Ready {
+		t.Fatalf("Hypervisor 已运行但 SLAT WMI 为 false 时应 ready，实际 %s: %+v", status.Overall, status.Checks)
+	}
+	if status.Overall != "ready" {
+		t.Fatalf("整体状态应为 ready，实际 %s", status.Overall)
+	}
+	found := false
+	for _, check := range status.Checks {
+		if check.ID == "virtualization" && check.Status == CheckOK {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("CPU 虚拟化检查应通过")
+	}
+}
+
+func TestEvaluateEnvironmentSlatUnknownButFirmwareEnabled(t *testing.T) {
+	raw := baseRawEnvironment()
+	raw.SLATSupported = false
+	raw.HypervisorPresent = false
+	raw.VirtualizationFirmwareEnabled = true
+
+	status := evaluateEnvironment(raw)
+	if !status.Ready {
+		t.Fatalf("固件虚拟化已开启时应 ready，实际 %s: %+v", status.Overall, status.Checks)
+	}
+}
+
 func TestEvaluateEnvironmentHomeEdition(t *testing.T) {
 	raw := baseRawEnvironment()
 	raw.EditionID = "Core"

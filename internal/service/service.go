@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	appVersion   = "0.1.0"
+	appVersion   = "0.1.1"
 	wailsVersion = "3.1.0"
 )
 

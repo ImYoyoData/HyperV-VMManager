@@ -76,7 +76,7 @@ type rawEnvironment struct {
 	HyperVFeatureKnown            bool   `json:"hyperVFeatureKnown"`
 	HyperVModuleAvailable         bool   `json:"hyperVModuleAvailable"`
 	HyperVVersion                 string `json:"hyperVVersion"`
-	VMServiceStatus               string `json:"vmServiceStatus"`
+	VMServiceStatus               string `json:"vmmsStatus"`
 	TermServiceStatus             string `json:"termServiceStatus"`
 	TermServicePresent            bool   `json:"termServicePresent"`
 	EnhancedSessionEnabled        bool   `json:"enhancedSessionEnabled"`
@@ -99,8 +99,11 @@ try {
 }
 $module = Get-Module -ListAvailable Hyper-V | Sort-Object Version -Descending | Select-Object -First 1
 $moduleAvailable = $null -ne $module
-$vmms = Get-Service vmms -ErrorAction SilentlyContinue
-$term = Get-Service TermService -ErrorAction SilentlyContinue
+$vmms = Get-CimInstance Win32_Service -Filter "Name='vmms'" -ErrorAction SilentlyContinue | Select-Object -First 1
+$term = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction SilentlyContinue | Select-Object -First 1
+$vmmsStatus = if ($vmms) { "$($vmms.State)" } else { "Absent" }
+$termStatus = if ($term) { "$($term.State)" } else { "Absent" }
+$termPresent = $null -ne $term
 $enhanced = $false
 $enhancedKnown = $false
 if ($moduleAvailable) {
@@ -129,9 +132,9 @@ Write-HvResult ([ordered]@{
   hyperVFeatureKnown = $featureKnown
   hyperVModuleAvailable = $moduleAvailable
   hyperVVersion = if ($module) { "$($module.Version)" } else { "" }
-  vmmsStatus = if ($vmms) { "$($vmms.Status)" } else { "Absent" }
-  termServiceStatus = if ($term) { "$($term.Status)" } else { "Absent" }
-  termServicePresent = $null -ne $term
+  vmmsStatus = $vmmsStatus
+  termServiceStatus = $termStatus
+  termServicePresent = $termPresent
   enhancedSessionEnabled = $enhanced
   enhancedSessionKnown = $enhancedKnown
 })
@@ -177,19 +180,25 @@ func evaluateEnvironment(raw rawEnvironment) EnvironmentStatus {
 	}
 
 	// 3. CPU 虚拟化 / SLAT
+	// 说明：Win32_Processor.SecondLevelAddressTranslationExtensions 在部分新 CPU、
+	// 或 Hyper-V 已接管虚拟化时可能返回 false，不能单独作为“不支持”的依据。
+	// 以 Hypervisor 是否已运行、固件虚拟化是否开启作为主要判断。
 	virtualizationReady := raw.HypervisorPresent || raw.VirtualizationFirmwareEnabled
-	if !raw.SLATSupported {
-		addCheck("virtualization", "CPU 虚拟化", CheckError,
-			fmt.Sprintf("CPU：%s。该处理器未报告 SLAT（二级地址转换）支持，Hyper-V 无法在这台设备上运行。", raw.CPUName), "none")
-	} else if raw.HypervisorPresent {
+	if raw.HypervisorPresent {
 		addCheck("virtualization", "CPU 虚拟化", CheckOK,
-			fmt.Sprintf("CPU：%s。Hypervisor 已在运行，虚拟化已启用。", raw.CPUName), "none")
+			fmt.Sprintf("CPU：%s。Hypervisor 已在运行，硬件虚拟化已启用，Hyper-V 可以正常使用。", raw.CPUName), "none")
 	} else if raw.VirtualizationFirmwareEnabled {
-		addCheck("virtualization", "CPU 虚拟化", CheckOK,
-			fmt.Sprintf("CPU：%s。BIOS/UEFI 已开启硬件虚拟化，启用 Hyper-V 后会接管。", raw.CPUName), "none")
+		detail := fmt.Sprintf("CPU：%s。BIOS/UEFI 已开启硬件虚拟化，启用 Hyper-V 后会接管。", raw.CPUName)
+		if !raw.SLATSupported {
+			detail += fmt.Sprintf("（WMI 未报告 SLAT，但这通常是系统或驱动的读取限制，不影响 Hyper-V 启用。）")
+		}
+		addCheck("virtualization", "CPU 虚拟化", CheckOK, detail, "none")
 	} else {
-		addCheck("virtualization", "CPU 虚拟化", CheckError,
-			fmt.Sprintf("CPU：%s。BIOS/UEFI 中尚未开启硬件虚拟化（Intel VT-x / AMD-V）。需要重启进入 BIOS/UEFI，开启 Virtualization Technology / SVM Mode 等选项。", raw.CPUName), "bios")
+		detail := fmt.Sprintf("CPU：%s。BIOS/UEFI 中尚未开启硬件虚拟化（Intel VT-x / AMD-V）。需要重启进入 BIOS/UEFI，开启 Virtualization Technology / SVM Mode 等选项。", raw.CPUName)
+		if !raw.SLATSupported {
+			detail += " 同时系统未报告 SLAT 支持，请在开启虚拟化后用任务管理器确认“虚拟化：已启用”。"
+		}
+		addCheck("virtualization", "CPU 虚拟化", CheckError, detail, "bios")
 	}
 
 	// 4. Hyper-V 功能与模块
@@ -252,11 +261,12 @@ func evaluateEnvironment(raw rawEnvironment) EnvironmentStatus {
 			}
 		}
 	}
-	if !supportedEdition || !raw.SLATSupported {
+	if !supportedEdition {
 		overall = "unsupported"
 		ready = false
 	}
 	// 虚拟化、Hyper-V 组件与 vmms 是运行虚拟机的硬性条件。
+	// 不再以 SLAT 的 WMI 字段作为阻断条件。
 	if !raw.IsAdmin || !virtualizationReady || !strings.EqualFold(raw.HyperVFeatureState, "Enabled") ||
 		!raw.HyperVModuleAvailable || raw.VMServiceStatus != "Running" {
 		ready = false
@@ -299,7 +309,7 @@ func evaluateEnvironment(raw rawEnvironment) EnvironmentStatus {
 }
 
 func supportEnough(raw rawEnvironment) bool {
-	return raw.SupportedEdition() && raw.SLATSupported &&
+	return raw.SupportedEdition() &&
 		strings.EqualFold(raw.HyperVFeatureState, "Enabled") && raw.HyperVModuleAvailable
 }
 

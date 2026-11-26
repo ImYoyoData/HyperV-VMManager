@@ -16,8 +16,8 @@ $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
 $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
 $module = Get-Module -ListAvailable Hyper-V | Sort-Object Version -Descending | Select-Object -First 1
 $installationType = "$((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue).InstallationType)"
-$vmms = Get-Service vmms -ErrorAction SilentlyContinue
-$term = Get-Service TermService -ErrorAction SilentlyContinue
+$vmms = Get-CimInstance Win32_Service -Filter "Name='vmms'" -ErrorAction SilentlyContinue | Select-Object -First 1
+$term = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction SilentlyContinue | Select-Object -First 1
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $enhanced = $false
 if ($vh) { $enhanced = [bool]$vh.EnableEnhancedSessionMode }
@@ -32,8 +32,8 @@ Write-HvResult ([ordered]@{
   installationType = $installationType
   enhancedSessionSupported = ($installationType -ne 'Server Core')
   enhancedSessionEnabled = $enhanced
-  vmServiceStatus = "$($vmms.Status)"
-  termServiceStatus = "$($term.Status)"
+  vmServiceStatus = if ($vmms) { "$($vmms.State)" } else { "Absent" }
+  termServiceStatus = if ($term) { "$($term.State)" } else { "Absent" }
   isAdmin = $isAdmin
   moduleAvailable = ($null -ne $module)
 })
@@ -54,15 +54,15 @@ $regValue = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersio
 if ($null -ne $regValue) { $reg = [int]$regValue }
 $policy = $false
 try { $policy = [bool](Get-VMHost -ErrorAction Stop).EnableEnhancedSessionMode } catch { }
-$vmms = Get-Service vmms -ErrorAction SilentlyContinue
-$term = Get-Service TermService -ErrorAction SilentlyContinue
+$vmms = Get-CimInstance Win32_Service -Filter "Name='vmms'" -ErrorAction SilentlyContinue | Select-Object -First 1
+$term = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction SilentlyContinue | Select-Object -First 1
 Write-HvResult ([ordered]@{
   installationType = $installationType
   supported = ($installationType -ne 'Server Core')
   hostPolicyEnabled = $policy
   registryValue = $reg
-  vmServiceStatus = "$($vmms.Status)"
-  termServiceStatus = "$($term.Status)"
+  vmServiceStatus = if ($vmms) { "$($vmms.State)" } else { "Absent" }
+  termServiceStatus = if ($term) { "$($term.State)" } else { "Absent" }
 })
 `
 	var status EnhancedSessionStatus
