@@ -41,6 +41,21 @@ export function AddHost(request: hosts$0.Request): $CancellablePromise<hosts$0.I
 }
 
 /**
+ * AddNATStaticMapping 新增 NAT 端口转发。
+ */
+export function AddNATStaticMapping(req: hyperv$0.NATStaticMappingRequest): $CancellablePromise<void> {
+    return $Call.ByID(2057864528, req);
+}
+
+/**
+ * AddTunnelMapping 把一条 NAT 端口转发追加到内网穿透映射并保存。
+ * 添加后仍需要在“内网穿透”页面填写 frps 并启用。
+ */
+export function AddTunnelMapping(req: $models.TunnelMappingRequest): $CancellablePromise<settings$0.Settings | null> {
+    return $Call.ByID(1466909631, req);
+}
+
+/**
  * AttachAPI 注入 HTTP API 服务（打破循环依赖）。
  */
 export function AttachAPI(api: httpapi$0.Server | null): $CancellablePromise<void> {
@@ -79,10 +94,28 @@ export function ConnectVM(name: string): $CancellablePromise<void> {
 }
 
 /**
+ * ConnectVMWithCredential 使用远程主机账户启动 VMConnect。
+ * 
+ * VMConnect 的 WinRM 查询使用独立进程的网络凭据，不会复用应用自己的
+ * WinRM 会话；因此远程控制台必须用 LOGON_NETCREDENTIALS_ONLY 启动，
+ * 让 VMConnect 内部使用这里填写的远程账户，而不是当前 Windows 登录账户。
+ */
+export function ConnectVMWithCredential(name: string, username: string, password: string): $CancellablePromise<void> {
+    return $Call.ByID(485720996, name, username, password);
+}
+
+/**
  * CreateAPIKey 新建 API Key。
  */
 export function CreateAPIKey(request: $models.APIKeyRequest): $CancellablePromise<settings$0.APIKey | null> {
     return $Call.ByID(2116837465, request);
+}
+
+/**
+ * CreateNATNetwork 创建内部交换机 + 自建 NAT。
+ */
+export function CreateNATNetwork(req: hyperv$0.CreateNATRequest): $CancellablePromise<void> {
+    return $Call.ByID(984444253, req);
 }
 
 /**
@@ -241,6 +274,13 @@ export function ListHosts(): $CancellablePromise<hosts$0.Item[] | null> {
 }
 
 /**
+ * ListNATNetworks 返回主机上的 Windows NAT 实例和端口转发规则。
+ */
+export function ListNATNetworks(): $CancellablePromise<hyperv$0.NATNetwork[] | null> {
+    return $Call.ByID(3545238146);
+}
+
+/**
  * ListSwitches 返回虚拟交换机列表。
  */
 export function ListSwitches(): $CancellablePromise<hyperv$0.VirtualSwitch[] | null> {
@@ -259,6 +299,13 @@ export function ListSwitchesForHost(hostID: string): $CancellablePromise<hyperv$
  */
 export function ListTasks(limit: number): $CancellablePromise<tasks$0.Task[] | null> {
     return $Call.ByID(4283336128, limit);
+}
+
+/**
+ * ListVMSummaries 返回轻量虚拟机列表，供自动刷新和仪表盘统计使用。
+ */
+export function ListVMSummaries(): $CancellablePromise<hyperv$0.VM[] | null> {
+    return $Call.ByID(4208156629);
 }
 
 /**
@@ -332,6 +379,20 @@ export function RemoveHost(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * RemoveNATNetwork 删除 NAT 实例，保留内部交换机和主机 IP。
+ */
+export function RemoveNATNetwork(name: string): $CancellablePromise<void> {
+    return $Call.ByID(1538928653, name);
+}
+
+/**
+ * RemoveNATStaticMapping 删除 NAT 端口转发。
+ */
+export function RemoveNATStaticMapping(req: hyperv$0.RemoveNATStaticMappingRequest): $CancellablePromise<void> {
+    return $Call.ByID(2775257463, req);
+}
+
+/**
  * RemoveSwitch 删除虚拟交换机。
  */
 export function RemoveSwitch(name: string): $CancellablePromise<void> {
@@ -379,6 +440,13 @@ export function SetActiveHost(id: string): $CancellablePromise<hosts$0.Item | nu
  */
 export function SetEnhancedSession(enabled: boolean): $CancellablePromise<void> {
     return $Call.ByID(759040284, enabled);
+}
+
+/**
+ * SetLocalUserPassword 通过当前 WinRM 连接修改远程主机本地账户密码。
+ */
+export function SetLocalUserPassword(req: hyperv$0.SetLocalUserPasswordRequest): $CancellablePromise<void> {
+    return $Call.ByID(1602329275, req);
 }
 
 /**

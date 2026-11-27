@@ -7,7 +7,7 @@ import PageHeader from "../components/PageHeader.vue";
 import HelpTip from "../components/HelpTip.vue";
 import HostConnectModal from "../components/HostConnectModal.vue";
 import { HyperVService, errorMessage } from "../api";
-import type { CreateRequest, HostItem, VirtualSwitch } from "../api";
+import type { CreateRequest, HostCapacity, HostItem, VirtualSwitch } from "../api";
 import { useAppStore } from "../stores/app";
 import { useTaskStore } from "../stores/tasks";
 import { useHostsStore } from "../stores/hosts";
@@ -38,6 +38,8 @@ const defaultsApplied = ref(false);
 const showHostConnect = ref(false);
 const connectTarget = ref<HostItem | null>(null);
 const pendingSubmit = ref(false);
+const targetCapacity = ref<HostCapacity | null>(null);
+const capacityLoading = ref(false);
 
 const form = reactive({
   name: "",
@@ -45,6 +47,8 @@ const form = reactive({
   directory: "",
 
   diskMode: "new" as "new" | "differencing" | "copy",
+  diskType: "dynamic" as "dynamic" | "fixed",
+  diskDirectory: "",
   imagePath: "",
   diskSizeGB: 60,
   isoPath: "",
@@ -58,6 +62,7 @@ const form = reactive({
   switchName: "",
   bandwidthMbps: 100,
   disableCheckpoints: true,
+  nestedVirtualization: false,
 });
 
 function applyDefaults() {
@@ -106,6 +111,118 @@ const finalDirectory = computed(() => {
   if (!form.directory) return "—";
   return `${form.directory.replace(/[\\/]+$/, "")}\\${form.name || "虚拟机名称"}`;
 });
+
+const driveOptions = computed(() =>
+  (targetCapacity.value?.disks ?? []).map((disk) => ({
+    label: `${disk.drive} 可用 ${formatGB(disk.freeBytes)} / 共 ${formatGB(disk.totalBytes)}`,
+    value: disk.drive,
+  }))
+);
+
+const selectedDrive = computed(() => {
+  const match = /^[A-Za-z]:/.exec(form.directory);
+  return match ? match[0].toUpperCase() : "";
+});
+
+const targetDisk = computed(() => {
+  const drive = selectedDrive.value;
+  return targetCapacity.value?.disks?.find((disk) => disk.drive.toUpperCase() === drive) ?? null;
+});
+
+const diskDirectoryDisk = computed(() => {
+  const match = /^[A-Za-z]:/.exec(form.diskDirectory);
+  if (!match) return null;
+  return targetCapacity.value?.disks?.find((disk) => disk.drive.toUpperCase() === match[0].toUpperCase()) ?? null;
+});
+
+const diskTarget = computed(() => diskDirectoryDisk.value ?? targetDisk.value);
+
+const diskSpaceWarning = computed(() => {
+  if (form.diskMode !== "new" || form.diskType !== "fixed") return "";
+  const disk = diskDirectoryDisk.value ?? targetDisk.value;
+  if (!disk) return "";
+  const need = Number(form.diskSizeGB) * 1024 * 1024 * 1024;
+  if (need > disk.freeBytes) {
+    return `目标磁盘 ${disk.drive} 可用 ${formatGB(disk.freeBytes)}，小于固定硬盘 ${form.diskSizeGB} GB，任务会失败。`;
+  }
+  return "";
+});
+
+const cpuAvailable = computed(() => Math.max(0, targetCapacity.value?.availableCPU ?? 0));
+const memoryAvailableMB = computed(() => Math.max(0, targetCapacity.value?.availableMemoryMB ?? 0));
+const memoryRequestedMB = computed(() =>
+  form.dynamic ? Number(form.maximumMB) : Number(form.startupMB)
+);
+
+const suggestedCPU = computed(() => {
+  if (cpuAvailable.value <= 0) return 2;
+  return Math.max(1, Math.min(8, Math.floor(cpuAvailable.value / 2)));
+});
+
+const suggestedMemoryMB = computed(() => {
+  if (memoryAvailableMB.value <= 0) return 4096;
+  return Math.max(2048, Math.min(8192, Math.floor(memoryAvailableMB.value / 2 / 1024) * 1024));
+});
+
+const suggestedDiskGB = computed(() => {
+  const free = diskTarget.value?.freeBytes ?? 0;
+  if (free <= 0) return 60;
+  return Math.max(20, Math.min(100, Math.floor((free / 1024 ** 3) * 0.2)));
+});
+
+function resourceLevel(requested: number, available: number): "ok" | "warn" | "bad" {
+  if (available <= 0) return "bad";
+  if (requested > available) return "bad";
+  if (requested > available * 0.8) return "warn";
+  return "ok";
+}
+
+const cpuLevel = computed(() => resourceLevel(Number(form.cpuCount), cpuAvailable.value));
+const memoryLevel = computed(() => resourceLevel(memoryRequestedMB.value, memoryAvailableMB.value));
+const diskLevel = computed(() => {
+  if (form.diskMode !== "new") return "ok";
+  return resourceLevel(Number(form.diskSizeGB), (diskTarget.value?.freeBytes ?? 0) / 1024 ** 3);
+});
+
+function formatGB(bytes: number): string {
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function onDriveChange(drive: string) {
+  const rest = form.directory.replace(/^[A-Za-z]:[\\/]?/, "");
+  form.directory = `${drive}\\${rest || "VMs"}`;
+}
+
+async function loadCapacity(hostID: string) {
+  if (!hostID) {
+    targetCapacity.value = null;
+    return;
+  }
+  capacityLoading.value = true;
+  try {
+    targetCapacity.value = await HyperVService.GetHostCapacity(hostID);
+  } catch {
+    targetCapacity.value = null;
+  } finally {
+    capacityLoading.value = false;
+  }
+}
+
+async function browseDiskDirectory() {
+  if (isRemote.value) {
+    message.warning("目标主机是远程计算机，请手动输入远程主机上的绝对路径");
+    return;
+  }
+  try {
+    const dir = await HyperVService.PickDirectoryIn(
+      "选择虚拟硬盘存放目录",
+      form.diskDirectory || form.directory || app.settings?.storageRoot || ""
+    );
+    if (dir) form.diskDirectory = dir;
+  } catch (err) {
+    message.error(errorMessage(err));
+  }
+}
 
 function validateStep(index: number): string {
   if (index === 0) {
@@ -242,10 +359,13 @@ async function submit() {
       switchName: form.switchName,
       bandwidthMbps: Number(form.bandwidthMbps),
       diskMode: form.diskMode,
+      diskType: form.diskType,
+      diskDirectory: form.diskDirectory.trim(),
       imagePath: form.imagePath.trim(),
       diskSizeGB: Number(form.diskSizeGB),
       isoPath: form.isoPath.trim(),
       disableCheckpoints: form.disableCheckpoints,
+      nestedVirtualization: form.nestedVirtualization,
     };
     const task = await HyperVService.SubmitCreate(targetHostID.value, request);
     message.success(`新建任务已提交到 ${host.name}${task ? `（${task.id}）` : ""}`);
@@ -276,7 +396,7 @@ async function onTargetHostChange(value: string) {
   form.switchName = "";
   const host = hosts.items.find((item) => item.id === value);
   await ensureHostConnected(host);
-  await loadSwitches();
+  await Promise.all([loadSwitches(), loadCapacity(value)]);
 }
 
 async function ensureHostConnected(host: HostItem | undefined): Promise<boolean> {
@@ -313,7 +433,7 @@ onMounted(async () => {
     targetHostID.value =
       app.activeHost?.id || hosts.items.find((item) => item.isLocal)?.id || hosts.items[0]?.id || "";
   }
-  await loadSwitches();
+  await Promise.all([loadSwitches(), loadCapacity(targetHostID.value)]);
 });
 </script>
 
@@ -383,6 +503,26 @@ onMounted(async () => {
               </n-button>
             </div>
           </n-form-item>
+          <n-form-item>
+            <template #label>
+              目标磁盘
+              <HelpTip>
+                <p>选择虚拟机文件存放在哪个磁盘。列表显示目标计算机上的固定磁盘与可用空间。</p>
+                <p>如果目标磁盘空间不足，可以换一个磁盘，或在下一步把虚拟硬盘单独放到其他磁盘。</p>
+              </HelpTip>
+            </template>
+            <n-select
+              :value="selectedDrive"
+              :options="driveOptions"
+              :loading="capacityLoading"
+              placeholder="选择目标磁盘"
+              @update:value="onDriveChange"
+            />
+          </n-form-item>
+          <div v-if="targetDisk" class="form-hint" style="margin: -4px 0 10px">
+            {{ targetDisk.drive }} 可用 {{ formatGB(targetDisk.freeBytes) }} / 共
+            {{ formatGB(targetDisk.totalBytes) }}
+          </div>
           <div class="form-hint">
             虚拟机最终目录：<span class="mono-text">{{ finalDirectory }}</span>
           </div>
@@ -410,6 +550,19 @@ onMounted(async () => {
           <n-form-item v-if="form.diskMode === 'new'" label="空硬盘大小（GB）">
             <n-input-number v-model:value="form.diskSizeGB" :min="1" :max="65536" style="width: 220px" />
           </n-form-item>
+          <div v-if="diskTarget" class="resource-hint inline" :class="'res-' + diskLevel">
+            <span>目标磁盘 {{ diskTarget.drive }}：可用 {{ formatGB(diskTarget.freeBytes) }} / 总 {{ formatGB(diskTarget.totalBytes) }}</span>
+            <span v-if="form.diskMode === 'new'">本次 {{ form.diskSizeGB }} GB · 建议 {{ suggestedDiskGB }} GB</span>
+            <n-button
+              v-if="form.diskMode === 'new'"
+              size="tiny"
+              text
+              type="primary"
+              @click="form.diskSizeGB = suggestedDiskGB"
+            >
+              使用建议
+            </n-button>
+          </div>
 
           <n-form-item v-else :label="form.diskMode === 'differencing' ? '父盘镜像（.vhdx / .vhd）' : '系统镜像（.vhdx / .vhd）'">
             <div class="input-with-button">
@@ -487,6 +640,43 @@ onMounted(async () => {
               <n-input-number v-model:value="form.maximumMB" :min="256" :step="512" style="width: 100%" />
             </n-form-item>
           </div>
+          <div class="resource-grid">
+            <div class="resource-hint" :class="'res-' + memoryLevel">
+              <div class="resource-label">内存</div>
+              <div>
+                可用 {{ formatMB(memoryAvailableMB) }} / 总
+                {{ formatMB(targetCapacity?.totalMemoryMB ?? 0) }}
+              </div>
+              <div>当前 {{ formatMB(memoryRequestedMB) }} · 建议 {{ formatMB(suggestedMemoryMB) }}</div>
+              <n-button
+                size="tiny"
+                text
+                type="primary"
+                @click="form.startupMB = suggestedMemoryMB; form.maximumMB = Math.max(form.maximumMB, suggestedMemoryMB)"
+              >
+                使用建议
+              </n-button>
+            </div>
+            <div class="resource-hint" :class="'res-' + cpuLevel">
+              <div class="resource-label">CPU</div>
+              <div>可用 {{ cpuAvailable }} / 总 {{ targetCapacity?.logicalProcessors ?? 0 }} 核</div>
+              <div>当前 {{ form.cpuCount }} 核 · 建议 {{ suggestedCPU }} 核</div>
+              <n-button size="tiny" text type="primary" @click="form.cpuCount = suggestedCPU">
+                使用建议
+              </n-button>
+            </div>
+          </div>
+          <n-form-item>
+            <template #label>
+              嵌套虚拟化
+              <HelpTip>
+                <p>允许在该虚拟机内继续运行 Hyper-V、WSL2、Windows Sandbox、Docker 等需要 CPU 虚拟化扩展的系统。</p>
+                <p>需要宿主机 CPU 支持虚拟化；开启后会自动为虚拟网卡启用 MAC 地址欺骗，嵌套虚拟机才能正常联网。</p>
+                <p>建议使用固定内存；如果开启后虚拟机无法启动，请关闭动态内存再试。</p>
+              </HelpTip>
+            </template>
+            <n-switch v-model:value="form.nestedVirtualization" />
+          </n-form-item>
           <div class="form-hint">
             当前配置：{{ formatMB(form.startupMB) }} 启动内存，{{ form.cpuCount }} 个虚拟处理器。
           </div>
@@ -597,6 +787,10 @@ onMounted(async () => {
         <span class="key">检查点</span>
         <span class="value">{{ form.disableCheckpoints ? "禁用" : "启用" }}</span>
       </div>
+      <div class="summary-row">
+        <span class="key">嵌套虚拟化</span>
+        <span class="value">{{ form.nestedVirtualization ? "开启" : "关闭" }}</span>
+      </div>
 
       <n-button
         type="primary"
@@ -637,5 +831,52 @@ onMounted(async () => {
   gap: 4px;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 4px 0 12px;
+}
+
+.resource-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-inset);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.resource-hint.inline {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: -4px 0 10px;
+}
+
+.resource-label {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.res-ok {
+  border-color: var(--ok-border);
+  background: var(--ok-surface);
+}
+
+.res-warn {
+  border-color: var(--amber-border);
+  background: var(--amber-surface);
+}
+
+.res-bad {
+  border-color: var(--err-border);
+  background: var(--err-surface);
 }
 </style>

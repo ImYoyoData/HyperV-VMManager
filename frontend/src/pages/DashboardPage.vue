@@ -54,7 +54,7 @@ const stateSummary = computed(() => {
 
 async function refreshAll() {
   refreshing.value = true;
-  await Promise.all([app.refreshHostInfo(), vmStore.fetch(), taskStore.fetch()]);
+  await Promise.all([app.refreshHostInfo(), vmStore.fetch({ force: true }), taskStore.fetch()]);
   refreshing.value = false;
 }
 

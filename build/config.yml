@@ -11,7 +11,7 @@ info:
   description: "面向云电脑与 AI Agent 的 Hyper-V 虚拟机管理助手" # The application description
   copyright: "(c) 2026, Yoyo" # Copyright text
   comments: "Hyper-V VM Manager" # Comments
-  version: "0.2.0" # The application version
+  version: "0.3.0" # The application version
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)
   #                               # Should match the name of your .icon file without the extension
   #                               # If not set and Assets.car exists, defaults to "appicon"

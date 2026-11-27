@@ -8,5 +8,6 @@ export {
 
 export type {
     APIKeyRequest,
-    Bootstrap
+    Bootstrap,
+    TunnelMappingRequest
 } from "./models.js";

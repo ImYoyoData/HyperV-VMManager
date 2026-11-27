@@ -16,6 +16,7 @@ import type {
   APIKey,
   APIKeyRequest,
   HostItem,
+  NATNetwork,
   Settings,
   TunnelStatus,
 } from "../api";
@@ -104,6 +105,10 @@ const form = reactive({
 const tunnelStatus = ref<TunnelStatus | null>(null);
 const tunnelLoading = ref(false);
 let tunnelTimer: ReturnType<typeof setInterval> | undefined;
+
+const natNetworks = ref<NATNetwork[]>([]);
+const natLoading = ref(false);
+const selectedNATMapping = ref<string | null>(null);
 
 interface TunnelMappingForm {
   id?: string;
@@ -282,6 +287,62 @@ function addMapping() {
 
 function removeMapping(index: number) {
   form.tunnel.mappings.splice(index, 1);
+}
+
+const natMappingOptions = computed(() => {
+  const options: {
+    label: string;
+    value: string;
+    hostIP: string;
+    externalPort: number;
+    name: string;
+  }[] = [];
+  const isLocalHost = !app.activeHost || app.activeHost.isLocal;
+  for (const nat of natNetworks.value) {
+    // 本机运行时 frpc 用 127.0.0.1 访问 portproxy 即可；
+    // 远程主机时使用对方报告的局域网 IP，仍要求本机能访问到它。
+    const targetHost = isLocalHost
+      ? "127.0.0.1"
+      : nat.externalIP || nat.hostIP || "127.0.0.1";
+    for (const mapping of nat.staticMappings ?? []) {
+      options.push({
+        label: `${nat.name} · ${mapping.protocol} ${mapping.externalPort} → ${mapping.internalIPAddress}:${mapping.internalPort}`,
+        value: `${nat.name}|${mapping.protocol}|${mapping.externalPort}`,
+        hostIP: targetHost,
+        externalPort: mapping.externalPort,
+        name: `${nat.name}-${mapping.externalPort}-${mapping.protocol.toLowerCase()}`,
+      });
+    }
+  }
+  return options;
+});
+
+async function loadNATNetworks() {
+  if (isWebMode) return;
+  natLoading.value = true;
+  try {
+    natNetworks.value = (await HyperVService.ListNATNetworks()) ?? [];
+  } catch {
+    natNetworks.value = [];
+  } finally {
+    natLoading.value = false;
+  }
+}
+
+function addMappingFromNAT() {
+  const option = natMappingOptions.value.find(
+    (item) => item.value === selectedNATMapping.value
+  );
+  if (!option) return;
+  form.tunnel.mappings.push({
+    enabled: true,
+    name: option.name,
+    localIP: option.hostIP,
+    localPort: option.externalPort,
+    remotePort: 0,
+  });
+  selectedNATMapping.value = null;
+  message.success("已添加 NAT 转发映射，保存设置后生效");
 }
 
 const tunnelStatusText = computed(() => {
@@ -486,6 +547,7 @@ onMounted(() => {
   void hosts.fetch();
   void loadKeys();
   void loadTunnelStatus();
+  void loadNATNetworks();
   tunnelTimer = setInterval(() => void loadTunnelStatus(), 5000);
 });
 
@@ -691,6 +753,9 @@ onUnmounted(() => {
       <n-tag size="small" :type="tunnelStatusType" :bordered="false">
         {{ tunnelStatusText }}
       </n-tag>
+      <n-button size="small" @click="$router.push('/tunnel')">
+        独立页面
+      </n-button>
       <n-button
         size="small"
         :loading="tunnelLoading"
@@ -756,6 +821,49 @@ onUnmounted(() => {
         </n-form-item>
       </div>
     </n-form>
+
+    <div class="tunnel-section">
+      <div class="tunnel-section-head">
+        <div>
+          <div class="tunnel-section-title">从 NAT 端口转发添加</div>
+          <div class="form-hint">
+            先在“虚拟交换机”页面创建 Internal + NAT 和端口转发，再在这里一键生成 frp 映射。
+          </div>
+        </div>
+        <n-button size="small" :loading="natLoading" @click="loadNATNetworks">
+          刷新 NAT
+        </n-button>
+      </div>
+      <div class="mapping-row">
+        <n-select
+          v-model:value="selectedNATMapping"
+          :options="natMappingOptions"
+          placeholder="选择 NAT 端口转发"
+          clearable
+          style="flex: 1"
+        />
+        <n-button
+          size="small"
+          type="primary"
+          :disabled="!selectedNATMapping"
+          @click="addMappingFromNAT"
+        >
+          添加为 frp 映射
+        </n-button>
+      </div>
+      <div v-if="natMappingOptions.length === 0" class="form-hint">
+        没有可用的 NAT 端口转发，或者当前连接的主机还没有配置 NAT。
+      </div>
+      <n-alert
+        v-if="app.activeHost && !app.activeHost.isLocal"
+        type="warning"
+        :show-icon="true"
+        style="margin-top: 10px"
+      >
+        当前管理的是远程主机。内置 frpc 在本机运行，目标地址必须是本机可达的远程宿主机 IP；
+        如果无法直连，请把 frpc 部署到远程宿主机，或使用可路由的远程地址。
+      </n-alert>
+    </div>
 
     <div class="tunnel-section">
       <div class="tunnel-section-head">

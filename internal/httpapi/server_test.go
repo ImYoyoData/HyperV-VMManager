@@ -20,9 +20,15 @@ import (
 type fakeBackend struct {
 	lastClone       hyperv.CloneRequest
 	lastDeleteFiles bool
+	summaryCalls    int
 }
 
 func (f *fakeBackend) ListVMs() ([]hyperv.VM, error) {
+	return []hyperv.VM{{Name: "vm1", State: "Running"}}, nil
+}
+
+func (f *fakeBackend) ListVMSummaries() ([]hyperv.VM, error) {
+	f.summaryCalls++
 	return []hyperv.VM{{Name: "vm1", State: "Running"}}, nil
 }
 
@@ -387,5 +393,38 @@ func TestHTTPAPIInvalidBody(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("非法 JSON 应返回 400，实际 %d", response.StatusCode)
+	}
+}
+
+func TestHTTPAPISummaryList(t *testing.T) {
+	backend, base, shutdown := startServer(t)
+	defer shutdown()
+
+	response, body := doRequest(t, http.MethodGet, base+"/api/v1/vms?summary=1", "secret-token", nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("轻量列表应返回 200，实际 %d：%s", response.StatusCode, body)
+	}
+	if backend.summaryCalls != 1 {
+		t.Fatalf("summary=1 应使用轻量接口，实际调用 %d 次", backend.summaryCalls)
+	}
+}
+
+func TestHTTPAPILoginRateLimit(t *testing.T) {
+	_, base, shutdown := startServer(t)
+	defer shutdown()
+
+	bad := map[string]string{"username": "admin", "password": "wrong"}
+	for i := 0; i < 5; i++ {
+		response, body := doRequest(t, http.MethodPost, base+"/api/v1/auth/login", "", bad)
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("第 %d 次错误密码应返回 401，实际 %d：%s", i+1, response.StatusCode, body)
+		}
+	}
+	response, body := doRequest(t, http.MethodPost, base+"/api/v1/auth/login", "", bad)
+	if response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("连续失败后应返回 429，实际 %d：%s", response.StatusCode, body)
+	}
+	if response.Header.Get("Retry-After") == "" {
+		t.Fatal("429 响应应包含 Retry-After")
 	}
 }

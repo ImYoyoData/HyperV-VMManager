@@ -208,3 +208,36 @@ func TestQueueClearFinished(t *testing.T) {
 		t.Fatal("清理后任务列表应为空")
 	}
 }
+
+func TestQueueListTrimsLogs(t *testing.T) {
+	queue, err := tasks.NewQueue(filepath.Join(t.TempDir(), "tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue.Register("logs", func(ctx context.Context, rep *tasks.Reporter, payload json.RawMessage) (map[string]any, error) {
+		for i := 0; i < 40; i++ {
+			rep.Log("日志 %d", i)
+		}
+		return nil, nil
+	})
+	queue.Start(context.Background())
+	defer queue.Stop()
+
+	task, _ := queue.Submit("logs", "target", map[string]string{})
+	waitStatus(t, queue, task.ID, tasks.StatusSucceeded, 3*time.Second)
+
+	items := queue.List(10)
+	if len(items) != 1 {
+		t.Fatalf("任务数量应为 1，实际 %d", len(items))
+	}
+	if len(items[0].Logs) != 20 {
+		t.Fatalf("列表日志应裁剪到 20 条，实际 %d", len(items[0].Logs))
+	}
+	full, err := queue.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Logs) < 40 {
+		t.Fatalf("任务详情应保留完整日志，实际 %d", len(full.Logs))
+	}
+}

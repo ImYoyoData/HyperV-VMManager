@@ -205,8 +205,11 @@ const groups: ApiGroup[] = [
           },
           { name: "imagePath", type: "string", required: "条件", description: "diskMode 为 differencing / copy 时必填，虚拟硬盘路径（.vhdx/.vhd）" },
           { name: "diskSizeGB", type: "number", required: "条件", description: "diskMode 为 new 时必填，空硬盘大小（GB）" },
+          { name: "diskType", type: "string", required: "否", description: "dynamic 动态扩展（默认，按需占用） | fixed 固定大小（立即占用完整大小）" },
+          { name: "diskDirectory", type: "string", required: "否", description: "虚拟硬盘单独存放目录；留空时放在虚拟机目录下的 Virtual Hard Disks" },
           { name: "isoPath", type: "string", required: "否", description: "安装 ISO 路径；填写后会自动挂载并设置光驱优先启动" },
           { name: "disableCheckpoints", type: "boolean", required: "否", description: "是否禁用检查点，默认 true" },
+          { name: "nestedVirtualization", type: "boolean", required: "否", description: "是否开启嵌套虚拟化；开启后自动启用网卡 MAC 地址欺骗" },
         ],
         response: `202 Accepted`,
         example: `curl -X POST http://127.0.0.1:17890/api/v1/vms \\
@@ -223,8 +226,11 @@ const groups: ApiGroup[] = [
     "diskMode": "differencing",
     "imagePath": "D:\\\\Images\\\\win11.vhdx",
     "diskSizeGB": 60,
+    "diskType": "dynamic",
+    "diskDirectory": "",
     "isoPath": "",
-    "disableCheckpoints": true
+    "disableCheckpoints": true,
+    "nestedVirtualization": false
   }'`,
       },
       {
@@ -232,7 +238,7 @@ const groups: ApiGroup[] = [
         path: "/api/v1/vms/{name}/clone",
         title: "克隆虚拟机",
         description:
-          "整台复制源虚拟机：导出 → 导入 → 重命名 → 应用内存/CPU/网络/带宽，并重新生成动态 MAC 地址。源机运行时会先关机（可关闭该行为）。可用 hostId 指定目标计算机。",
+          "克隆源虚拟机并应用内存/CPU/网络/带宽。diskMode=copy 使用导出/导入生成独立磁盘；diskMode=differencing 使用差异磁盘，速度快、占用小，但依赖源盘。可用 hostId 指定目标计算机。",
         params: [
           { name: "name", type: "string（路径）", required: "是", description: "源虚拟机名称" },
           {
@@ -250,6 +256,9 @@ const groups: ApiGroup[] = [
           { name: "cpuCount", type: "number", required: "是", description: "新机 CPU 核数" },
           { name: "switchName", type: "string", required: "否", description: "新交换机名称；空字符串表示保持源机网络" },
           { name: "bandwidthMbps", type: "number", required: "否", description: "新机带宽上限，0 表示不限" },
+          { name: "diskMode", type: "string", required: "否", description: "copy 完整复制（默认） | differencing 差异磁盘（省空间，依赖源盘）" },
+          { name: "exportDirectory", type: "string", required: "否", description: "完整复制时使用的临时导出目录；留空使用目标主机临时目录" },
+          { name: "nestedVirtualization", type: "boolean", required: "否", description: "是否开启嵌套虚拟化；开启后自动启用网卡 MAC 地址欺骗" },
         ],
         example: `curl -X POST http://127.0.0.1:17890/api/v1/vms/win11/clone \\
   -H "Authorization: Bearer <token>" \\
@@ -273,6 +282,15 @@ const groups: ApiGroup[] = [
           { name: "switchName", type: "string | null", required: "否", description: "新的虚拟交换机名称" },
           { name: "bandwidthMbps", type: "number | null", required: "否", description: "新的带宽上限（Mbps）" },
           { name: "checkpointsEnabled", type: "boolean | null", required: "否", description: "是否启用检查点" },
+          { name: "nestedVirtualization", type: "boolean | null", required: "否", description: "是否开启嵌套虚拟化" },
+          {
+            name: "disks",
+            type: "array | null",
+            required: "否",
+            description:
+              "调整虚拟硬盘容量。元素字段：path 硬盘路径、sizeBytes 新容量（字节）、allowShrink 是否允许缩小",
+          },
+          { name: "stopVMForDiskResize", type: "boolean", required: "否", description: "调整硬盘前是否自动关闭虚拟机，默认 false" },
         ],
         example: `curl -X PATCH http://127.0.0.1:17890/api/v1/vms/win11 \\
   -H "Authorization: Bearer <token>" \\
@@ -376,6 +394,7 @@ Content-Type: application/json
 - GET /api/v1/hosts/{id}/capacity
 - POST /api/v1/hosts/{id}/connect        {"password":"...","remember":true}
 - GET /api/v1/vms?hostId=<hostId>
+- GET /api/v1/vms?summary=1              轻量列表（轮询/自动刷新用）
 - GET /api/v1/vms/{name}
 - POST /api/v1/vms?hostId=<hostId>      新建虚拟机
 - POST /api/v1/vms/{name}/clone?hostId=<hostId>

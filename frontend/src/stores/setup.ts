@@ -4,6 +4,9 @@ import type { EnvironmentStatus } from "../api";
 
 const SKIP_KEY = "hvvm.setup.skipped";
 
+// 启动与主机切换可能同时触发环境检查，合并成一次避免重复启动 PowerShell。
+let inFlightCheck: Promise<void> | null = null;
+
 function readSkipped(): boolean {
   try {
     return sessionStorage.getItem(SKIP_KEY) === "1";
@@ -29,20 +32,39 @@ export const useSetupStore = defineStore("setup", {
     unsupported: (state) => state.status?.overall === "unsupported",
   },
   actions: {
-    async check() {
+    async check(options: { force?: boolean } = {}) {
+      if (inFlightCheck) {
+        if (options.force) {
+          await inFlightCheck;
+          return this.check({ force: true });
+        }
+        return inFlightCheck;
+      }
       this.loading = true;
       this.error = "";
-      try {
-        const status = await HyperVService.GetEnvironmentStatus();
-        if (!status) {
-          throw new Error("服务未返回环境检测结果");
+
+      const run = (async () => {
+        try {
+          const status = await HyperVService.GetEnvironmentStatus();
+          if (!status) {
+            throw new Error("服务未返回环境检测结果");
+          }
+          this.status = status;
+          this.checked = true;
+        } catch (err) {
+          this.error = errorMessage(err);
+        } finally {
+          this.loading = false;
         }
-        this.status = status;
-        this.checked = true;
-      } catch (err) {
-        this.error = errorMessage(err);
+      })();
+
+      inFlightCheck = run;
+      try {
+        await run;
       } finally {
-        this.loading = false;
+        if (inFlightCheck === run) {
+          inFlightCheck = null;
+        }
       }
     },
     skip() {
@@ -66,7 +88,7 @@ export const useSetupStore = defineStore("setup", {
       this.fixingError = "";
       try {
         await HyperVService.SetEnhancedSession(true);
-        await this.check();
+        await this.check({ force: true });
       } catch (err) {
         this.fixingError = errorMessage(err);
         throw err;

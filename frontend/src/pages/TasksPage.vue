@@ -13,7 +13,7 @@ import PageHeader from "../components/PageHeader.vue";
 import StatCard from "../components/StatCard.vue";
 import TaskKindTag from "../components/TaskKindTag.vue";
 import TaskStatusTag from "../components/TaskStatusTag.vue";
-import { errorMessage } from "../api";
+import { HyperVService, errorMessage } from "../api";
 import type { Task } from "../api";
 import { useTaskStore } from "../stores/tasks";
 import { useHostsStore } from "../stores/hosts";
@@ -44,6 +44,12 @@ const stats = computed(() => ({
   failed: taskStore.items.filter((task) => task.status === "failed").length,
 }));
 
+const tablePagination = {
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 30, 50, 100],
+};
+
 function progressStatus(task: Task): "default" | "success" | "error" | "info" | "warning" {
   switch (task.status) {
     case "running":
@@ -64,6 +70,7 @@ const columns: DataTableColumns<Task> = [
     title: "任务 ID",
     key: "id",
     width: 186,
+    fixed: "left",
     render: (row) => h("span", { class: "mono-text" }, row.id),
   },
   {
@@ -121,6 +128,7 @@ const columns: DataTableColumns<Task> = [
     key: "actions",
     width: 140,
     align: "right",
+    fixed: "right",
     render: (row) =>
       h(
         NSpace,
@@ -159,6 +167,14 @@ function openDetail(id: string) {
   selectedId.value = id;
   showDetail.value = true;
   void nextTick(scrollLogs);
+  // 列表只带最近 20 条日志，这里补全完整日志。
+  void HyperVService.GetTask(id)
+    .then((task) => {
+      if (task) taskStore.upsert(task);
+    })
+    .catch(() => {
+      // 读取失败时保留列表中的摘要日志
+    });
 }
 
 async function cancelTask(task: Task) {
@@ -239,7 +255,8 @@ onMounted(() => {
       :single-line="false"
       size="small"
       :row-key="(row: Task) => row.id"
-      :scroll-x="1180"
+      :scroll-x="1280"
+      :pagination="tablePagination"
     >
       <template #empty>
         <div class="empty-hint">

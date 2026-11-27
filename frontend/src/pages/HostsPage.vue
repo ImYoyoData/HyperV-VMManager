@@ -127,7 +127,7 @@ async function saveHost() {
     };
     if (isEditing.value) {
       await hosts.update(request);
-      message.success("计算机配置已更新，请重新连接");
+      message.success("计算机配置已更新");
     } else {
       await hosts.add(request);
       message.success("远程计算机已添加，请点击“连接”验证 WinRM 与 Hyper-V 权限");
@@ -169,9 +169,10 @@ async function activate(item: HostItem) {
       message.success(`已连接 ${item.name}`);
       await afterSwitch();
     } catch (err) {
-      connectTarget.value = item;
+      // 保存的密码可能已经失效，直接打开密码框让用户重新输入，
+      // 同时保留错误信息和修复入口。
+      openConnect(item);
       connectError.value = errorMessage(err);
-      showConnectHelp.value = true;
     }
     return;
   }
@@ -243,10 +244,13 @@ async function doConnect() {
 async function afterSwitch() {
   await hosts.fetch();
   if (isWebMode) {
-    await app.init();
-    await vmStore.fetch();
-    await taskStore.fetch();
-    await setup.check();
+    vmStore.clear();
+    await Promise.all([
+      app.init(),
+      vmStore.fetch({ force: true }),
+      taskStore.fetch(),
+      setup.check({ force: true }),
+    ]);
   }
   await router.push("/vms");
 }
@@ -428,8 +432,9 @@ Enable-WSManCredSSP -Role Client -DelegateComputer "192.168.0.16" -Force
       </n-collapse-item>
       <n-collapse-item title="密码保存说明" name="password">
         <div class="help-text">
-          远程密码只保存在当前应用进程内存中，用于建立 WinRM 会话，不会写入 hosts.json。
-          关闭应用后需要重新输入；主机名、地址、用户名等配置会保留。
+          勾选“记住密码”时，密码会加密保存到 Windows 凭据管理器，应用重启后可以直接连接，
+          VMConnect 和 Hyper-V 管理器也能复用；不勾选时密码只保存在当前应用进程内存中。
+          任何情况下密码都不会写入 hosts.json。要删除已保存的密码，请点击计算机卡片上的“忘记密码”。
         </div>
       </n-collapse-item>
     </n-collapse>
@@ -556,7 +561,8 @@ Enable-WSManCredSSP -Role Client -DelegateComputer "192.168.0.16" -Force
         </n-button>
       </n-alert>
       <n-alert v-else type="warning" :show-icon="true">
-        密码只保存在内存中。连接会通过 WinRM 执行 <span class="mono-text">Get-VMHost</span>
+        勾选“记住密码”会把密码加密保存到 Windows 凭据管理器；不勾选时密码仅在本次运行期间保存在内存中。
+        连接会通过 WinRM 执行 <span class="mono-text">Get-VMHost</span>
         验证权限；如果失败，会自动打开解决方案并给出可复制的修复命令。
       </n-alert>
     </div>

@@ -19,6 +19,21 @@ $installationType = "$((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\Cu
 $vmms = Get-CimInstance Win32_Service -Filter "Name='vmms'" -ErrorAction SilentlyContinue | Select-Object -First 1
 $term = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction SilentlyContinue | Select-Object -First 1
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$localUsers = @()
+try {
+  $users = @(Get-LocalUser -ErrorAction Stop | Sort-Object Name)
+} catch {
+  $users = @(Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Sort-Object Name)
+}
+foreach ($u in $users) {
+  $localUsers += [ordered]@{
+    name = "$($u.Name)"
+    fullName = "$($u.FullName)"
+    enabled = [bool]$u.Enabled
+    passwordRequired = [bool]$u.PasswordRequired
+    principalSource = "$($u.PrincipalSource)"
+  }
+}
 $enhanced = $false
 if ($vh) { $enhanced = [bool]$vh.EnableEnhancedSessionMode }
 Write-HvResult ([ordered]@{
@@ -37,6 +52,7 @@ Write-HvResult ([ordered]@{
   termServiceStatus = if ($term) { "$($term.State)" } else { "Absent" }
   isAdmin = $isAdmin
   moduleAvailable = ($null -ne $module)
+  localUsers = $localUsers
 })
 `
 	var info HostInfo

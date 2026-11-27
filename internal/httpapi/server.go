@@ -46,6 +46,7 @@ type Status struct {
 // Backend 是 GUI、网页控制台与 HTTP API 共用的业务接口。
 type Backend interface {
 	ListVMs() ([]hyperv.VM, error)
+	ListVMSummaries() ([]hyperv.VM, error)
 	ListVMsForHost(hostID string) ([]hyperv.VM, error)
 	GetVM(name string) (*hyperv.VM, error)
 	GetHostInfo() (*hyperv.HostInfo, error)
@@ -96,6 +97,18 @@ type session struct {
 	Expires  time.Time
 }
 
+// loginAttempt 记录单个客户端地址的失败次数，用于限制网页控制台的暴力破解。
+type loginAttempt struct {
+	Failures     int
+	LastFailure  time.Time
+	BlockedUntil time.Time
+}
+
+const (
+	maxLoginFailures   = 5
+	loginBlockDuration = time.Minute
+)
+
 type authContextKey struct{}
 
 type authInfo struct {
@@ -109,19 +122,21 @@ type Server struct {
 	backend Backend
 	assets  fs.FS
 
-	mu       sync.Mutex
-	server   *http.Server
-	cfg      Config
-	status   Status
-	sessions map[string]session
+	mu            sync.Mutex
+	server        *http.Server
+	cfg           Config
+	status        Status
+	sessions      map[string]session
+	loginAttempts map[string]*loginAttempt
 }
 
 func New(backend Backend, assets fs.FS) *Server {
 	return &Server{
-		backend:  backend,
-		assets:   assets,
-		status:   Status{Enabled: false},
-		sessions: map[string]session{},
+		backend:       backend,
+		assets:        assets,
+		status:        Status{Enabled: false},
+		sessions:      map[string]session{},
+		loginAttempts: map[string]*loginAttempt{},
 	}
 }
 
@@ -203,6 +218,16 @@ func (s *Server) Status() Status {
 	return s.status
 }
 
+// UpdateAuth 在不重启监听的情况下更新登录凭据与 API Key。
+// 这样桌面端修改密码或 API Key 时，网页控制台已有的登录会话不会被清空。
+func (s *Server) UpdateAuth(cfg Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Username = cfg.Username
+	s.cfg.Password = cfg.Password
+	s.cfg.APIKeys = cfg.APIKeys
+}
+
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -228,18 +253,32 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 }
 
 func (s *Server) authenticate(r *http.Request) *authInfo {
-	s.mu.Lock()
-	sessions := map[string]session{}
-	for token, sess := range s.sessions {
-		sessions[token] = sess
+	var (
+		username   string
+		hasSession bool
+		cfg        Config
+	)
+	sessionToken := ""
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		sessionToken = cookie.Value
 	}
-	cfg := s.cfg
+
+	s.mu.Lock()
+	if sessionToken != "" {
+		if sess, ok := s.sessions[sessionToken]; ok {
+			if time.Now().Before(sess.Expires) {
+				username = sess.Username
+				hasSession = true
+			} else {
+				delete(s.sessions, sessionToken)
+			}
+		}
+	}
+	cfg = s.cfg
 	s.mu.Unlock()
 
-	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		if sess, ok := sessions[cookie.Value]; ok && time.Now().Before(sess.Expires) {
-			return &authInfo{IsWeb: true, Username: sess.Username}
-		}
+	if hasSession {
+		return &authInfo{IsWeb: true, Username: username}
 	}
 
 	token := bearerToken(r)
@@ -505,6 +544,16 @@ func (s *Server) routes() http.Handler {
 // ---------- 认证处理 ----------
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if wait, allowed := s.loginAllowed(r); !allowed {
+		seconds := int(wait.Seconds() + 0.999)
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeError(w, http.StatusTooManyRequests, fmt.Errorf("登录失败次数过多，请 %d 秒后再试", seconds))
+		return
+	}
+
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -520,13 +569,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	usernameOK := subtle.ConstantTimeCompare([]byte(body.Username), []byte(cfg.Username)) == 1
 	passwordOK := subtle.ConstantTimeCompare([]byte(body.Password), []byte(cfg.Password)) == 1
 	if !usernameOK || !passwordOK {
+		s.recordLoginFailure(r)
 		writeError(w, http.StatusUnauthorized, errors.New("用户名或密码错误"))
 		return
 	}
+	s.clearLoginFailures(r)
 
 	token := randomHex(16)
 	expires := time.Now().Add(12 * time.Hour)
 	s.mu.Lock()
+	now := time.Now()
+	for key, sess := range s.sessions {
+		if now.After(sess.Expires) {
+			delete(s.sessions, key)
+		}
+	}
 	s.sessions[token] = session{Username: cfg.Username, Expires: expires}
 	s.mu.Unlock()
 
@@ -541,6 +598,60 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   12 * 60 * 60,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"username": cfg.Username})
+}
+
+func loginClientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func (s *Server) loginAllowed(r *http.Request) (time.Duration, bool) {
+	ip := loginClientIP(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for addr, attempt := range s.loginAttempts {
+		if now.Sub(attempt.LastFailure) > 30*time.Minute && now.After(attempt.BlockedUntil) {
+			delete(s.loginAttempts, addr)
+		}
+	}
+	attempt := s.loginAttempts[ip]
+	if attempt == nil || now.After(attempt.BlockedUntil) {
+		return 0, true
+	}
+	return time.Until(attempt.BlockedUntil), false
+}
+
+func (s *Server) recordLoginFailure(r *http.Request) {
+	ip := loginClientIP(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	attempt := s.loginAttempts[ip]
+	if attempt == nil {
+		attempt = &loginAttempt{}
+		s.loginAttempts[ip] = attempt
+	}
+	// 距离上次失败超过 10 分钟时重新计数，避免误伤正常用户。
+	if now.Sub(attempt.LastFailure) > 10*time.Minute {
+		attempt.Failures = 0
+	}
+	attempt.Failures++
+	attempt.LastFailure = now
+	if attempt.Failures >= maxLoginFailures {
+		attempt.BlockedUntil = now.Add(loginBlockDuration)
+		attempt.Failures = 0
+	}
+}
+
+func (s *Server) clearLoginFailures(r *http.Request) {
+	ip := loginClientIP(r)
+	s.mu.Lock()
+	delete(s.loginAttempts, ip)
+	s.mu.Unlock()
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -588,11 +699,13 @@ type bootstrapResponse struct {
 	Settings     settings.Settings `json:"settings"`
 	HostInfo     *hyperv.HostInfo  `json:"hostInfo,omitempty"`
 	HostError    string            `json:"hostError,omitempty"`
+	VMError      string            `json:"vmError,omitempty"`
 	VMCount      int               `json:"vmCount"`
 	RunningCount int               `json:"runningCount"`
 	IsAdmin      bool              `json:"isAdmin"`
 	DataDir      string            `json:"dataDir"`
 	API          Status            `json:"api"`
+	Tunnel       tunnel.Status     `json:"tunnel"`
 	TaskStats    tasks.Stats       `json:"taskStats"`
 	ActiveHost   *hosts.Item       `json:"activeHost,omitempty"`
 	AppVersion   string            `json:"appVersion"`
@@ -611,6 +724,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		IsAdmin:      s.backend.IsAdmin(),
 		DataDir:      s.backend.GetDataDirectory(),
 		API:          s.Status(),
+		Tunnel:       s.backend.GetTunnelStatus(),
 		TaskStats:    s.backend.GetTaskStats(),
 		AppVersion:   appVersion,
 		WailsVersion: wailsVersion,
@@ -746,6 +860,7 @@ Content-Type: application/json
 - GET /api/v1/hosts/{id}/capacity
 - GET /api/v1/host
 - GET /api/v1/vms?hostId=<id>
+- GET /api/v1/vms?summary=1              轻量列表（轮询/自动刷新用）
 - GET /api/v1/vms/{name}
 - GET /api/v1/vms/{name}/suggest-clone-path
 - GET /api/v1/switches
@@ -771,10 +886,13 @@ POST /api/v1/vms?hostId=<hostId>
   "switchName": "Default Switch",
   "bandwidthMbps": 100,
   "diskMode": "differencing",
+  "diskType": "dynamic",
+  "diskDirectory": "",
   "imagePath": "D:\\Images\\win11.vhdx",
   "diskSizeGB": 60,
   "isoPath": "D:\\Images\\win11.iso",
-  "disableCheckpoints": true
+  "disableCheckpoints": true,
+  "nestedVirtualization": false
 }
 
 ### 克隆 / 编辑 / 删除 / 电源
@@ -871,13 +989,18 @@ func (s *Server) handleForgetHostCredential(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleListVMs(w http.ResponseWriter, r *http.Request) {
 	hostID := hostIDFromRequest(r)
+	summary := r.URL.Query().Get("summary")
+	wantsSummary := summary == "1" || strings.EqualFold(summary, "true")
 	var (
 		vms []hyperv.VM
 		err error
 	)
-	if hostID != "" {
+	switch {
+	case hostID != "":
 		vms, err = s.backend.ListVMsForHost(hostID)
-	} else {
+	case wantsSummary:
+		vms, err = s.backend.ListVMSummaries()
+	default:
 		vms, err = s.backend.ListVMs()
 	}
 	if err != nil {

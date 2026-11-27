@@ -1,6 +1,6 @@
 // Package credentials 使用 Windows 凭据管理器保存远程主机密码。
-// 凭据目标直接使用主机地址，因此 VMConnect、Hyper-V 管理器等系统工具
-// 也可以在连接同一台主机时复用这份凭据。
+// VMConnect / 远程桌面使用 TERMSRV/<主机> 作为凭据目标；旧版本曾把密码
+// 保存在裸主机名下，因此读取和删除时同时兼容两种目标。
 package credentials
 
 import (
@@ -11,6 +11,12 @@ import (
 
 	"github.com/danieljoos/wincred"
 )
+
+const termsrvPrefix = "TERMSRV/"
+
+func termsrvTarget(host string) string {
+	return termsrvPrefix + host
+}
 
 // Save 保存远程主机密码。username 建议使用「计算机名\本地用户名」格式，
 // 这样 VMConnect 的 Negotiate 认证才能正确使用。
@@ -23,7 +29,7 @@ func Save(host, username, password string) error {
 	if username == "" {
 		return errors.New("用户名不能为空")
 	}
-	credential := wincred.NewGenericCredential(host)
+	credential := wincred.NewGenericCredential(termsrvTarget(host))
 	credential.UserName = username
 	credential.CredentialBlob = encodePassword(password)
 	credential.Persist = wincred.PersistLocalMachine
@@ -34,16 +40,20 @@ func Save(host, username, password string) error {
 }
 
 // Load 读取远程主机密码；不存在时返回 ok=false。
+// 新版本写入 TERMSRV/<主机>，同时兼容旧版本写入的裸主机名。
 func Load(host string) (username string, password string, ok bool) {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return "", "", false
 	}
-	credential, err := wincred.GetGenericCredential(host)
-	if err != nil || credential == nil {
-		return "", "", false
+	for _, target := range []string{termsrvTarget(host), host} {
+		credential, err := wincred.GetGenericCredential(target)
+		if err != nil || credential == nil {
+			continue
+		}
+		return credential.UserName, decodePassword(credential.CredentialBlob), true
 	}
-	return credential.UserName, decodePassword(credential.CredentialBlob), true
+	return "", "", false
 }
 
 // Saved 判断该主机是否已保存密码。
@@ -52,18 +62,20 @@ func Saved(host string) bool {
 	return ok
 }
 
-// Delete 删除远程主机密码。
+// Delete 删除远程主机密码，同时清理新旧两种凭据目标。
 func Delete(host string) error {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return nil
 	}
-	credential, err := wincred.GetGenericCredential(host)
-	if err != nil || credential == nil {
-		return nil
-	}
-	if err := credential.Delete(); err != nil {
-		return errors.New("删除 Windows 凭据失败: " + err.Error())
+	for _, target := range []string{termsrvTarget(host), host} {
+		credential, err := wincred.GetGenericCredential(target)
+		if err != nil || credential == nil {
+			continue
+		}
+		if err := credential.Delete(); err != nil {
+			return errors.New("删除 Windows 凭据失败: " + err.Error())
+		}
 	}
 	return nil
 }

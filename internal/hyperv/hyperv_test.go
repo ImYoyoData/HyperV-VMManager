@@ -65,17 +65,23 @@ func TestScriptSyntax(t *testing.T) {
 	}
 
 	scripts := map[string]string{
-		"listVMs":       vmDTOScript + "\nGet-VM | Out-Null\n",
-		"power":         powerScript,
-		"applySettings": applySettingsScript,
-		"cloneExport":   cloneExportScript,
-		"cloneImport":   cloneImportScript,
-		"createDisk":    createDiskScript,
-		"createVM":      createVMScript,
-		"editVM":        editVMScript,
-		"deleteVM":      deleteVMScript,
-		"environment":   environmentScript,
-		"remoteWrapper": remoteWrapperScript,
+		"listVMs":          vmDTOScript + "\nGet-VM | Out-Null\n",
+		"vmSummaries":      vmSummaryScript,
+		"power":            powerScript,
+		"applySettings":    applySettingsScript,
+		"cloneExport":      cloneExportScript,
+		"cloneImport":      cloneImportScript,
+		"createDisk":       createDiskScript,
+		"createVM":         createVMScript,
+		"editVM":           editVMScript,
+		"deleteVM":         deleteVMScript,
+		"environment":      environmentScript,
+		"remoteWrapper":    remoteWrapperScript,
+		"listNAT":          natScriptHelpers + listNATScript,
+		"createNAT":        natScriptHelpers + createNATScript,
+		"removeNAT":        natScriptHelpers + removeNATScript,
+		"addNATMapping":    natScriptHelpers + addNATMappingScript,
+		"removeNATMapping": natScriptHelpers + removeNATMappingScript,
 	}
 
 	for name, body := range scripts {

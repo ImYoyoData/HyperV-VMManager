@@ -42,6 +42,12 @@ type Queue struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	started   bool
+
+	// 任务进度和日志变化非常频繁。直接每次同步重写整个历史文件会拖慢
+	// 克隆/新建任务，因此合并为短时间窗口内的一次写盘。
+	dirty     bool
+	saveTimer *time.Timer
+	saveMu    sync.Mutex
 }
 
 // NewQueue 创建队列并加载持久化历史。
@@ -91,18 +97,23 @@ func (q *Queue) Start(parent context.Context) {
 // Stop 停止队列，并终止正在执行的任务。
 func (q *Queue) Stop() {
 	q.mu.Lock()
-	if !q.started {
-		q.mu.Unlock()
-		return
-	}
+	started := q.started
 	q.started = false
 	cancel := q.cancel
+	if q.saveTimer != nil {
+		q.saveTimer.Stop()
+		q.saveTimer = nil
+	}
 	q.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
+	if started {
+		if cancel != nil {
+			cancel()
+		}
+		q.wg.Wait()
 	}
-	q.wg.Wait()
+	// 退出前把尚未落盘的任务历史写完。
+	q.flushSave()
 }
 
 // Submit 提交任务（默认本机），返回排队中的任务快照。
@@ -164,6 +175,8 @@ func (q *Queue) Get(id string) (*Task, error) {
 }
 
 // List 返回最近的 limit 条任务，最新的在前。
+// 列表只保留每条任务最后 20 条日志，详情页会通过 Get 读取完整日志，
+// 避免网页控制台轮询时传输大量历史日志。
 func (q *Queue) List(limit int) []Task {
 	if limit <= 0 || limit > 200 {
 		limit = 200
@@ -172,7 +185,11 @@ func (q *Queue) List(limit int) []Task {
 	defer q.mu.Unlock()
 	result := make([]Task, 0, min(limit, len(q.entries)))
 	for i := len(q.entries) - 1; i >= 0 && len(result) < limit; i-- {
-		result = append(result, q.entries[i].task.CloneSnapshot())
+		snapshot := q.entries[i].task.CloneSnapshot()
+		if len(snapshot.Logs) > 20 {
+			snapshot.Logs = snapshot.Logs[len(snapshot.Logs)-20:]
+		}
+		result = append(result, snapshot)
 	}
 	return result
 }
@@ -508,7 +525,8 @@ func (q *Queue) load() error {
 		q.entries = append(q.entries, e)
 		q.byID[task.ID] = e
 	}
-	q.saveLocked()
+	q.dirty = true
+	q.flushSave()
 	return nil
 }
 
@@ -516,10 +534,38 @@ func (q *Queue) saveLocked() {
 	if q.storePath == "" {
 		return
 	}
+	q.dirty = true
+	if q.saveTimer != nil {
+		return
+	}
+	q.saveTimer = time.AfterFunc(400*time.Millisecond, q.flushSave)
+}
+
+// flushSave 把当前任务历史写入磁盘。调用方不需要持有锁。
+func (q *Queue) flushSave() {
+	if q.storePath == "" {
+		return
+	}
+	// 串行化写盘，保证后一次快照不会先于前一次落盘。
+	q.saveMu.Lock()
+	defer q.saveMu.Unlock()
+
+	q.mu.Lock()
+	if q.saveTimer != nil {
+		q.saveTimer.Stop()
+		q.saveTimer = nil
+	}
+	if !q.dirty {
+		q.mu.Unlock()
+		return
+	}
+	q.dirty = false
 	tasks := make([]Task, 0, len(q.entries))
 	for _, e := range q.entries {
 		tasks = append(tasks, e.task.CloneSnapshot())
 	}
+	q.mu.Unlock()
+
 	data, err := json.MarshalIndent(persistedQueue{Version: 1, Tasks: tasks}, "", "  ")
 	if err != nil {
 		return

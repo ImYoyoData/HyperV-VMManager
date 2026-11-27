@@ -80,6 +80,15 @@ function Write-HvError($msg) {
   $line = "HVFAIL:$b64"
   if ($env:HV_REMOTE -eq '1') { Write-Output $line } else { [Console]::Out.Write($line) }
 }
+function Assert-HvFreeSpace($path, $needBytes, $what) {
+  $root = [IO.Path]::GetPathRoot($path)
+  if (-not $root) { return }
+  $letter = $root.Substring(0, 1)
+  $drive = Get-PSDrive -Name $letter -ErrorAction SilentlyContinue
+  if ($drive -and $null -ne $drive.Free -and $drive.Free -lt [int64]$needBytes) {
+    throw ("目标磁盘 {0} 可用空间 {1:N1} GB，不足：{2} 至少需要 {3:N1} GB" -f $root, ($drive.Free / 1GB), $what, ([int64]$needBytes / 1GB))
+  }
+}
 try {
 `
 
@@ -327,16 +336,24 @@ func boolFlag(value bool) string {
 	return "0"
 }
 
-// TestConnection 验证远程 WinRM 连接与 Hyper-V 权限，然后返回主机信息。
+// TestConnection 验证远程 WinRM 连接与 Hyper-V 权限，然后返回主机基础信息。
+// 只执行一次 PowerShell，避免连接远程主机时重复启动两次进程。
 func (c *Client) TestConnection(ctx context.Context) (*HostInfo, error) {
 	body := `
 $vh = Get-VMHost -ErrorAction Stop
-Write-HvResult ([ordered]@{ name = "$env:COMPUTERNAME"; version = "$($vh.Version)" })
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+Write-HvResult ([ordered]@{
+  computerName = "$env:COMPUTERNAME"
+  userName = "$env:USERNAME"
+  hyperVVersion = "$($vh.Version)"
+  isAdmin = $isAdmin
+})
 `
-	if err := c.run(ctx, body, nil, nil); err != nil {
+	var info HostInfo
+	if err := c.run(ctx, body, nil, &info); err != nil {
 		return nil, err
 	}
-	return c.HostInfo(ctx)
+	return &info, nil
 }
 
 // IsAdmin 判断当前进程是否具有管理员权限。

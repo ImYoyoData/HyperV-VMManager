@@ -1,6 +1,6 @@
 import { HyperVService as WailsHyperVService } from "../../bindings/hypervvmmanager/internal/service";
 import type { Bootstrap } from "../../bindings/hypervvmmanager/internal/service/models";
-import type { APIKeyRequest } from "../../bindings/hypervvmmanager/internal/service/models";
+import type { APIKeyRequest, TunnelMappingRequest } from "../../bindings/hypervvmmanager/internal/service/models";
 import type {
   VM,
   HostInfo,
@@ -9,11 +9,18 @@ import type {
   EnhancedSessionStatus,
   EnvironmentStatus,
   EnvironmentCheck,
+  HostCapacity,
   CreateRequest,
   CloneRequest,
   EditRequest,
   CreateSwitchRequest,
   MemoryOptions,
+  NATNetwork,
+  NATStaticMapping,
+  CreateNATRequest,
+  NATStaticMappingRequest,
+  RemoveNATStaticMappingRequest,
+  SetLocalUserPasswordRequest,
 } from "../../bindings/hypervvmmanager/internal/hyperv/models";
 import type { Task, TaskLog, Stats as TaskStats } from "../../bindings/hypervvmmanager/internal/tasks/models";
 import type { Settings, APIKey } from "../../bindings/hypervvmmanager/internal/settings/models";
@@ -35,6 +42,7 @@ export type {
   EnhancedSessionStatus,
   EnvironmentStatus,
   EnvironmentCheck,
+  HostCapacity,
   Task,
   TaskLog,
   TaskStats,
@@ -43,11 +51,18 @@ export type {
   APIKeyRequest,
   APIStatus,
   TunnelStatus,
+  TunnelMappingRequest,
   CreateRequest,
   CloneRequest,
   EditRequest,
   CreateSwitchRequest,
   MemoryOptions,
+  NATNetwork,
+  NATStaticMapping,
+  CreateNATRequest,
+  NATStaticMappingRequest,
+  RemoveNATStaticMappingRequest,
+  SetLocalUserPasswordRequest,
 };
 
 // Wails 桌面端使用 WebView2 / WKWebView / WebKitGTK；普通浏览器没有这些标志。
@@ -152,10 +167,13 @@ const webService = {
   GetBootstrap: () => getWebBootstrap(),
   GetHostInfo: () => webFetch<HostInfo>("/host"),
   GetEnvironmentStatus: () => webFetch<EnvironmentStatus>("/environment"),
+  GetHostCapacity: (hostID: string) =>
+    webFetch<HostCapacity>(`/hosts/${segment(hostID)}/capacity`),
   GetEnhancedSessionStatus: () => webFetch<EnhancedSessionStatus>("/enhanced-session"),
   SetEnhancedSession: (enabled: boolean) => postJSON("/enhanced-session", { enabled }),
 
-  ListVMs: () => listItems<VM>("/vms"),
+  ListVMs: () => listItems<VM>("/vms?summary=1"),
+  ListVMSummaries: () => listItems<VM>("/vms?summary=1"),
   ListVMsForHost: (hostID: string) => listItems<VM>(withHost("/vms", hostID)),
   GetVM: (name: string) => webFetch<VM>(`/vms/${segment(name)}`),
   ListSwitches: () => listItems<VirtualSwitch>("/switches"),
@@ -164,6 +182,16 @@ const webService = {
   CreateSwitch: (req: CreateSwitchRequest) => postJSON("/switches", req),
   RemoveSwitch: (name: string) =>
     webFetch(`/switches/${segment(name)}`, { method: "DELETE" }),
+  // NAT 与内部交换机的管理放在桌面端，网页控制台只读交换机列表。
+  ListNATNetworks: () => Promise.resolve([] as NATNetwork[]),
+  CreateNATNetwork: (_req: CreateNATRequest) =>
+    Promise.reject(new Error("请在桌面端“虚拟交换机”页面管理 NAT 网络")),
+  RemoveNATNetwork: (_name: string) =>
+    Promise.reject(new Error("请在桌面端“虚拟交换机”页面管理 NAT 网络")),
+  AddNATStaticMapping: (_req: NATStaticMappingRequest) =>
+    Promise.reject(new Error("请在桌面端“虚拟交换机”页面管理 NAT 端口转发")),
+  RemoveNATStaticMapping: (_req: RemoveNATStaticMappingRequest) =>
+    Promise.reject(new Error("请在桌面端“虚拟交换机”页面管理 NAT 端口转发")),
   SuggestCloneDirectory: (sourceName: string) =>
     webFetch<{ directory: string }>(
       `/vms/${segment(sourceName)}/suggest-clone-path`
@@ -243,7 +271,9 @@ const webService = {
   GetTunnelStatus: () =>
     Promise.resolve({ enabled: false, running: false, connected: false } as TunnelStatus),
   RestartTunnel: () =>
-    Promise.reject(new Error("请在桌面端“设置 → 内网穿透”中管理 frp 连接")),
+    Promise.reject(new Error("请在桌面端“内网穿透”页面管理 frp 连接")),
+  AddTunnelMapping: (_req: TunnelMappingRequest) =>
+    Promise.reject(new Error("请在桌面端配置内网穿透")),
 
   PickFile: () =>
     Promise.reject(new Error("网页控制台不能访问宿主机文件，请手动输入绝对路径")),
@@ -257,6 +287,10 @@ const webService = {
     Promise.reject(new Error("网页控制台不能打开宿主机日志目录")),
   OpenTool: () => Promise.reject(new Error("网页控制台不能打开宿主机管理工具")),
   ConnectVM: () => Promise.reject(new Error("网页控制台不能启动 VMConnect，请在桌面端连接")),
+  ConnectVMWithCredential: () =>
+    Promise.reject(new Error("网页控制台不能启动 VMConnect，请在桌面端连接")),
+  SetLocalUserPassword: (_req: SetLocalUserPasswordRequest) =>
+    Promise.reject(new Error("请在桌面端修改远程主机账户密码")),
   RestartElevated: () => Promise.reject(new Error("网页控制台不能重启桌面应用")),
 };
 

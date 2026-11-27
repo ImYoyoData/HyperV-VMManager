@@ -5,6 +5,8 @@ import { HyperVService, errorMessage, isWebMode } from "../api";
 import type { Task } from "../api";
 
 let webPollTimer: ReturnType<typeof setInterval> | undefined;
+let offTaskUpdate: (() => void) | undefined;
+let offTaskFinished: (() => void) | undefined;
 
 export const useTaskStore = defineStore("tasks", {
   state: () => ({
@@ -31,8 +33,24 @@ export const useTaskStore = defineStore("tasks", {
       this.loading = true;
       this.error = "";
       try {
-        const items = await HyperVService.ListTasks(100);
-        this.items = items ?? [];
+        const items = (await HyperVService.ListTasks(100)) ?? [];
+        // 列表接口只返回最近 20 条日志；如果详情页已经拉取过完整日志，
+        // 保留完整日志并把列表中的新日志合并进来，避免轮询把日志清空。
+        const previous = new Map(this.items.map((item) => [item.id, item]));
+        this.items = items.map((task) => {
+          const existing = previous.get(task.id);
+          const existingLogs = existing?.logs ?? [];
+          const incomingLogs = task.logs ?? [];
+          if (existingLogs.length <= incomingLogs.length) {
+            return task;
+          }
+          const seen = new Set(existingLogs.map((log) => `${log.time}|${log.message}`));
+          const merged = [
+            ...existingLogs,
+            ...incomingLogs.filter((log) => !seen.has(`${log.time}|${log.message}`)),
+          ];
+          return { ...task, logs: merged.slice(-300) };
+        });
       } catch (err) {
         this.error = errorMessage(err);
       } finally {
@@ -51,28 +69,37 @@ export const useTaskStore = defineStore("tasks", {
       if (this.bound) return;
       this.bound = true;
       if (isWebMode) {
-        // 浏览器没有 Wails 事件通道，用轮询刷新任务进度。
+        // 浏览器没有 Wails 事件通道，用轮询刷新任务进度；页面不可见时暂停。
         webPollTimer = setInterval(() => {
-          void this.fetch();
+          if (!document.hidden) {
+            void this.fetch();
+          }
         }, 3000);
         return;
       }
-      Events.On(TaskUpdate, (event: { data: Task }) => {
+      const offUpdate = Events.On(TaskUpdate, (event: { data: Task }) => {
         if (event?.data) {
           this.upsert(event.data);
         }
       });
-      Events.On(TaskFinished, (event: { data: Task }) => {
+      const offFinished = Events.On(TaskFinished, (event: { data: Task }) => {
         if (event?.data) {
           this.upsert(event.data);
         }
       });
+      offTaskUpdate = typeof offUpdate === "function" ? offUpdate : undefined;
+      offTaskFinished = typeof offFinished === "function" ? offFinished : undefined;
     },
     stopEvents() {
       if (webPollTimer) {
         clearInterval(webPollTimer);
         webPollTimer = undefined;
       }
+      offTaskUpdate?.();
+      offTaskFinished?.();
+      offTaskUpdate = undefined;
+      offTaskFinished = undefined;
+      this.bound = false;
     },
     async cancel(id: string) {
       await HyperVService.CancelTask(id);

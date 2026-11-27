@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"hypervvmmanager/internal/credentials"
 )
 
 // FixClientWinRM 在本机（WinRM 客户端）启动 WinRM 服务，并把远程主机加入
@@ -142,9 +144,10 @@ func escapePowerShellPath(path string) string {
 }
 
 // SaveHostCredential 把远程主机的凭据写入 Windows 凭据管理器，
-// 供 VMConnect、Hyper-V 管理器等系统工具复用。
+// 供 VMConnect、远程桌面等系统工具复用。
+// 凭据目标使用 TERMSRV/<主机>，这是 Windows 远程连接读取凭据时使用的名称。
 // 远程主机使用 Microsoft 账户时，VMConnect 的 Negotiate 不接受邮箱格式，
-// 应使用「计算机名\本地用户名」形式。
+// 应使用「计算机名\本地用户名」或「MicrosoftAccount\邮箱」形式。
 func SaveHostCredential(host, username, password string) error {
 	host = strings.TrimSpace(host)
 	username = strings.TrimSpace(username)
@@ -154,17 +157,11 @@ func SaveHostCredential(host, username, password string) error {
 	if username == "" {
 		return errors.New("用户名不能为空")
 	}
-	if strings.ContainsAny(host+username, "\r\n$\"'") {
+	if strings.TrimSpace(password) == "" {
+		return errors.New("远程账户密码为空。Windows 默认禁止空密码本地账户进行远程登录（包括 VMConnect），请先在远程主机上为该账户设置密码")
+	}
+	if strings.ContainsAny(host+username, "\r\n") {
 		return errors.New("主机地址或用户名包含非法字符")
 	}
-	cmd := exec.Command("cmdkey.exe", "/generic:"+host, "/user:"+username, "/pass:"+password)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if text := decodeConsoleText(string(out)); text != "" {
-			return errors.New(text)
-		}
-		return fmt.Errorf("写入 Windows 凭据管理器失败: %w", err)
-	}
-	return nil
+	return credentials.Save(host, username, password)
 }

@@ -2,6 +2,10 @@ import { defineStore } from "pinia";
 import { HyperVService, errorMessage } from "../api";
 import type { Bootstrap, HostInfo, HostItem, Settings, APIStatus } from "../api";
 
+// 切换主机时页面和全局事件都会触发 app.init，合并成一次可以避免
+// 重复读取主机信息与虚拟机列表（远程 WinRM 下代价很高）。
+let inFlightInit: Promise<void> | null = null;
+
 export const useAppStore = defineStore("app", {
   state: () => ({
     loaded: false,
@@ -31,19 +35,32 @@ export const useAppStore = defineStore("app", {
   },
   actions: {
     async init() {
+      if (inFlightInit) return inFlightInit;
       this.loading = true;
       this.error = "";
-      try {
-        const data = await HyperVService.GetBootstrap();
-        if (!data) {
-          throw new Error("未收到应用的启动数据");
+
+      const run = (async () => {
+        try {
+          const data = await HyperVService.GetBootstrap();
+          if (!data) {
+            throw new Error("未收到应用的启动数据");
+          }
+          this.applyBootstrap(data);
+        } catch (err) {
+          this.error = errorMessage(err);
+        } finally {
+          this.loaded = true;
+          this.loading = false;
         }
-        this.applyBootstrap(data);
-      } catch (err) {
-        this.error = errorMessage(err);
+      })();
+
+      inFlightInit = run;
+      try {
+        await run;
       } finally {
-        this.loaded = true;
-        this.loading = false;
+        if (inFlightInit === run) {
+          inFlightInit = null;
+        }
       }
     },
     applyBootstrap(data: Bootstrap) {

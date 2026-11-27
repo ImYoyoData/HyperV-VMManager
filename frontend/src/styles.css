@@ -521,6 +521,20 @@ code,
   margin-top: 1px;
 }
 
+.vm-pending {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 5px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--net-cyan-bg);
+  color: var(--net-cyan-fg);
+  font-size: 10px;
+  font-weight: 500;
+  vertical-align: 1px;
+}
+
 .cell-muted {
   color: var(--muted);
   font-size: 12px;

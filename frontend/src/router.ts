@@ -52,6 +52,12 @@ const router = createRouter({
       meta: { title: "虚拟交换机" },
     },
     {
+      path: "/tunnel",
+      name: "tunnel",
+      component: () => import("./pages/TunnelPage.vue"),
+      meta: { title: "内网穿透" },
+    },
+    {
       path: "/setup",
       name: "setup",
       component: () => import("./pages/SetupPage.vue"),

@@ -8,7 +8,7 @@ import HelpTip from "../components/HelpTip.vue";
 import VmStateTag from "../components/VmStateTag.vue";
 import HostConnectModal from "../components/HostConnectModal.vue";
 import { HyperVService, errorMessage } from "../api";
-import type { CloneRequest, HostItem, VM, VirtualSwitch } from "../api";
+import type { CloneRequest, HostCapacity, HostItem, VM, VirtualSwitch } from "../api";
 import { useAppStore } from "../stores/app";
 import { useHostsStore } from "../stores/hosts";
 import { useTaskStore } from "../stores/tasks";
@@ -28,6 +28,8 @@ const defaultsApplied = ref(false);
 const showHostConnect = ref(false);
 const connectTarget = ref<HostItem | null>(null);
 const pendingSubmit = ref(false);
+const targetCapacity = ref<HostCapacity | null>(null);
+const capacityLoading = ref(false);
 
 const targetHostID = ref("");
 const targetHost = computed(
@@ -45,6 +47,8 @@ const form = reactive({
   sourceName: "",
   newName: "",
   targetDirectory: "",
+  diskMode: "copy" as "copy" | "differencing",
+  exportDirectory: "",
   followSource: true,
   stopSourceIfRunning: true,
   startupMB: 4096,
@@ -54,6 +58,7 @@ const form = reactive({
   cpuCount: 4,
   switchName: "",
   bandwidthMbps: 100,
+  nestedVirtualization: false,
 });
 
 const sourceVM = computed(
@@ -82,6 +87,102 @@ const finalDirectory = computed(() => {
   if (!form.targetDirectory) return "—";
   return `${form.targetDirectory.replace(/[\\/]+$/, "")}\\${form.newName || "新名称"}`;
 });
+
+const driveOptions = computed(() =>
+  (targetCapacity.value?.disks ?? []).map((disk) => ({
+    label: `${disk.drive} 可用 ${formatGB(disk.freeBytes)} / 共 ${formatGB(disk.totalBytes)}`,
+    value: disk.drive,
+  }))
+);
+
+const selectedDrive = computed(() => {
+  const match = /^[A-Za-z]:/.exec(form.targetDirectory);
+  return match ? match[0].toUpperCase() : "";
+});
+
+const targetDisk = computed(() => {
+  const drive = selectedDrive.value;
+  return targetCapacity.value?.disks?.find((disk) => disk.drive.toUpperCase() === drive) ?? null;
+});
+
+function formatGB(bytes: number): string {
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+const cpuAvailable = computed(() => Math.max(0, targetCapacity.value?.availableCPU ?? 0));
+const memoryAvailableMB = computed(() => Math.max(0, targetCapacity.value?.availableMemoryMB ?? 0));
+const memoryRequestedMB = computed(() =>
+  form.dynamic ? Number(form.maximumMB) : Number(form.startupMB)
+);
+
+const suggestedCPU = computed(() => {
+  if (cpuAvailable.value <= 0) return 2;
+  return Math.max(1, Math.min(8, Math.floor(cpuAvailable.value / 2)));
+});
+
+const suggestedMemoryMB = computed(() => {
+  if (memoryAvailableMB.value <= 0) return 4096;
+  return Math.max(2048, Math.min(8192, Math.floor(memoryAvailableMB.value / 2 / 1024) * 1024));
+});
+
+const sourceDiskBytes = computed(() =>
+  (sourceVM.value?.hardDrives ?? []).reduce(
+    (sum, disk) => sum + (disk.fileSizeBytes || 0),
+    0
+  )
+);
+
+const freeGB = computed(() => (targetDisk.value?.freeBytes ?? 0) / 1024 ** 3);
+
+function resourceLevel(requested: number, available: number): "ok" | "warn" | "bad" {
+  if (available <= 0) return "bad";
+  if (requested > available) return "bad";
+  if (requested > available * 0.8) return "warn";
+  return "ok";
+}
+
+const cpuLevel = computed(() => resourceLevel(Number(form.cpuCount), cpuAvailable.value));
+const memoryLevel = computed(() => resourceLevel(memoryRequestedMB.value, memoryAvailableMB.value));
+const diskLevel = computed(() => {
+  if (form.diskMode === "differencing") return "ok";
+  return resourceLevel(sourceDiskBytes.value / 1024 ** 3, freeGB.value);
+});
+
+function onDriveChange(drive: string) {
+  const rest = form.targetDirectory.replace(/^[A-Za-z]:[\\/]?/, "");
+  form.targetDirectory = `${drive}\\${rest || "VMs"}`;
+}
+
+async function loadCapacity(hostID: string) {
+  if (!hostID) {
+    targetCapacity.value = null;
+    return;
+  }
+  capacityLoading.value = true;
+  try {
+    targetCapacity.value = await HyperVService.GetHostCapacity(hostID);
+  } catch {
+    targetCapacity.value = null;
+  } finally {
+    capacityLoading.value = false;
+  }
+}
+
+async function browseExportDirectory() {
+  if (isRemote.value) {
+    message.warning("目标主机是远程计算机，请手动输入远程主机上的绝对路径");
+    return;
+  }
+  try {
+    const directory = await HyperVService.PickDirectoryIn(
+      "选择克隆临时导出目录",
+      form.exportDirectory || form.targetDirectory || ""
+    );
+    if (directory) form.exportDirectory = directory;
+  } catch (err) {
+    message.error(errorMessage(err));
+  }
+}
 
 function applyDefaults() {
   const settings = app.settings;
@@ -128,6 +229,7 @@ async function onSourceChange(name: string) {
   form.minimumMB = vm.memoryMinimumMB || 1024;
   form.maximumMB = vm.memoryMaximumMB || Math.max(vm.memoryStartupMB, 8192);
   form.cpuCount = vm.processorCount;
+  form.nestedVirtualization = vm.nestedVirtualization;
   form.switchName = "";
   if (form.followSource) {
     await refreshSourceDirectory(name);
@@ -208,6 +310,8 @@ async function submit() {
       newName: form.newName.trim(),
       targetDirectory: form.targetDirectory.trim(),
       stopSourceIfRunning: form.stopSourceIfRunning,
+      diskMode: form.diskMode,
+      exportDirectory: form.exportDirectory.trim(),
       memory: {
         startupMB: Number(form.startupMB),
         dynamic: form.dynamic,
@@ -217,6 +321,7 @@ async function submit() {
       cpuCount: Number(form.cpuCount),
       switchName: form.switchName,
       bandwidthMbps: Number(form.bandwidthMbps),
+      nestedVirtualization: form.nestedVirtualization,
     };
     const task = await HyperVService.SubmitClone(targetHostID.value, request);
     message.success(`克隆任务已提交到 ${host.name}${task ? `（${task.id}）` : ""}`);
@@ -264,7 +369,7 @@ async function onTargetHostChange(value: string) {
   switches.value = [];
   const host = hosts.items.find((item) => item.id === value);
   await ensureHostConnected(host);
-  await Promise.all([loadSwitches(), loadSourceVMs()]);
+  await Promise.all([loadSwitches(), loadSourceVMs(), loadCapacity(value)]);
 }
 
 async function ensureHostConnected(host: HostItem | undefined): Promise<boolean> {
@@ -301,7 +406,7 @@ onMounted(async () => {
     targetHostID.value =
       app.activeHost?.id || hosts.items.find((item) => item.isLocal)?.id || hosts.items[0]?.id || "";
   }
-  await Promise.all([loadSwitches(), loadSourceVMs()]);
+  await Promise.all([loadSwitches(), loadSourceVMs(), loadCapacity(targetHostID.value)]);
 });
 </script>
 
@@ -406,6 +511,107 @@ onMounted(async () => {
           新虚拟机最终目录：<span class="mono-text">{{ finalDirectory }}</span>
         </div>
 
+        <n-form-item>
+          <template #label>
+            目标磁盘
+            <HelpTip>
+              <p>选择新虚拟机文件存放在哪个磁盘。列表显示目标计算机上的固定磁盘与可用空间。</p>
+              <p>完整复制大约需要源盘已用空间等量的空闲空间；空间不足时可以选择差异磁盘。</p>
+            </HelpTip>
+          </template>
+          <n-select
+            :value="selectedDrive"
+            :options="driveOptions"
+            :loading="capacityLoading"
+            placeholder="选择目标磁盘"
+            @update:value="onDriveChange"
+          />
+        </n-form-item>
+        <div v-if="targetDisk" class="form-hint" style="margin: -4px 0 10px">
+          {{ targetDisk.drive }} 可用 {{ formatGB(targetDisk.freeBytes) }} / 共
+          {{ formatGB(targetDisk.totalBytes) }}
+        </div>
+
+        <n-form-item>
+          <template #label>
+            克隆磁盘方式
+            <HelpTip>
+              <p><strong>完整复制</strong>：导出再导入，生成完全独立的虚拟硬盘；需要源盘已用空间等量的临时空间和目标空间。</p>
+              <p><strong>差异磁盘</strong>：新虚拟机使用以源盘为父盘的差异磁盘，占用空间小、创建快；但源盘不能删除或修改，否则新虚拟机会损坏。</p>
+            </HelpTip>
+          </template>
+          <n-radio-group v-model:value="form.diskMode">
+            <n-radio-button value="copy">完整复制（独立磁盘）</n-radio-button>
+            <n-radio-button value="differencing">差异磁盘（省空间）</n-radio-button>
+          </n-radio-group>
+        </n-form-item>
+        <n-form-item v-if="form.diskMode === 'copy'">
+          <template #label>
+            临时导出目录（可选）
+            <HelpTip>
+              <p>完整复制会先把源虚拟机导出到临时目录。留空时使用目标主机的系统临时目录。</p>
+              <p>如果系统盘空间不足，请改成目标磁盘上的目录，例如 D:\VMs\clone-temp。</p>
+            </HelpTip>
+          </template>
+          <div class="input-with-button">
+            <n-input v-model:value="form.exportDirectory" placeholder="留空使用目标主机临时目录" />
+            <n-button size="small" :disabled="isRemote" @click="browseExportDirectory">
+              <template #icon>
+                <n-icon :component="FolderOutline" />
+              </template>
+              浏览
+            </n-button>
+          </div>
+        </n-form-item>
+        <n-alert
+          v-if="form.diskMode === 'differencing'"
+          type="warning"
+          :show-icon="true"
+          style="margin-bottom: 12px"
+        >
+          差异磁盘不会复制源盘，新虚拟机会依赖源虚拟机的硬盘文件。源盘不能删除、移动或修改，
+          源虚拟机需要保持关机直到差异盘创建完成。
+        </n-alert>
+
+        <div class="resource-grid">
+          <div class="resource-hint" :class="'res-' + diskLevel">
+            <div class="resource-label">磁盘</div>
+            <div>
+              目标 {{ targetDisk?.drive || "—" }} 可用
+              {{ formatGB(targetDisk?.freeBytes ?? 0) }} / 总
+              {{ formatGB(targetDisk?.totalBytes ?? 0) }}
+            </div>
+            <div v-if="form.diskMode === 'copy'">
+              源盘文件占用约 {{ formatGB(sourceDiskBytes) }}
+            </div>
+            <div v-else>差异磁盘占用空间较小</div>
+          </div>
+          <div class="resource-hint" :class="'res-' + memoryLevel">
+            <div class="resource-label">内存</div>
+            <div>
+              可用 {{ formatMB(memoryAvailableMB) }} / 总
+              {{ formatMB(targetCapacity?.totalMemoryMB ?? 0) }}
+            </div>
+            <div>当前 {{ formatMB(memoryRequestedMB) }} · 建议 {{ formatMB(suggestedMemoryMB) }}</div>
+            <n-button
+              size="tiny"
+              text
+              type="primary"
+              @click="form.startupMB = suggestedMemoryMB; form.maximumMB = Math.max(form.maximumMB, suggestedMemoryMB)"
+            >
+              使用建议
+            </n-button>
+          </div>
+          <div class="resource-hint" :class="'res-' + cpuLevel">
+            <div class="resource-label">CPU</div>
+            <div>可用 {{ cpuAvailable }} / 总 {{ targetCapacity?.logicalProcessors ?? 0 }} 核</div>
+            <div>当前 {{ form.cpuCount }} 核 · 建议 {{ suggestedCPU }} 核</div>
+            <n-button size="tiny" text type="primary" @click="form.cpuCount = suggestedCPU">
+              使用建议
+            </n-button>
+          </div>
+        </div>
+
         <div class="detail-section-title">硬件覆盖</div>
         <div class="form-grid">
           <n-form-item>
@@ -423,6 +629,17 @@ onMounted(async () => {
           </n-form-item>
           <n-form-item label="动态内存">
             <n-switch v-model:value="form.dynamic" />
+          </n-form-item>
+          <n-form-item>
+            <template #label>
+              嵌套虚拟化
+              <HelpTip>
+                <p>允许在该虚拟机内继续运行 Hyper-V、WSL2、Windows Sandbox、Docker 等需要虚拟化扩展的系统。</p>
+                <p>需要宿主机 CPU 支持；开启后会自动为虚拟网卡启用 MAC 地址欺骗。</p>
+                <p>克隆时会覆盖源机的嵌套虚拟化设置；建议使用固定内存。</p>
+              </HelpTip>
+            </template>
+            <n-switch v-model:value="form.nestedVirtualization" />
           </n-form-item>
           <n-form-item>
             <template #label>
@@ -447,8 +664,14 @@ onMounted(async () => {
         </div>
 
         <n-alert type="info" :show-icon="true">
-          克隆会重新生成虚拟机 ID 和动态 MAC 地址，避免与源虚拟机冲突。导出过程可能需要几分钟，
-          取决于虚拟硬盘大小。
+          <template v-if="form.diskMode === 'differencing'">
+            差异磁盘克隆会重新生成虚拟机 ID 和动态 MAC 地址，创建速度快、占用空间小；
+            请勿修改、移动或删除源虚拟机的硬盘文件。
+          </template>
+          <template v-else>
+            完整复制会重新生成虚拟机 ID 和动态 MAC 地址，避免与源虚拟机冲突。导出过程可能需要几分钟，
+            取决于虚拟硬盘大小。
+          </template>
         </n-alert>
       </n-form>
     </div>
@@ -470,6 +693,10 @@ onMounted(async () => {
       <div class="summary-row">
         <span class="key">目标目录</span>
         <span class="value mono-text">{{ finalDirectory }}</span>
+      </div>
+      <div class="summary-row">
+        <span class="key">磁盘方式</span>
+        <span class="value">{{ form.diskMode === "differencing" ? "差异磁盘（省空间）" : "完整复制" }}</span>
       </div>
       <div class="summary-row">
         <span class="key">源机状态</span>
@@ -495,6 +722,10 @@ onMounted(async () => {
       <div class="summary-row">
         <span class="key">带宽</span>
         <span class="value">{{ form.bandwidthMbps > 0 ? `${form.bandwidthMbps} Mbps` : "不限" }}</span>
+      </div>
+      <div class="summary-row">
+        <span class="key">嵌套虚拟化</span>
+        <span class="value">{{ form.nestedVirtualization ? "开启" : "关闭" }}</span>
       </div>
 
       <n-button
@@ -567,4 +798,42 @@ onMounted(async () => {
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border-soft);
 }
-</style>
+
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 4px 0 12px;
+}
+
+.resource-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-inset);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.resource-label {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.res-ok {
+  border-color: var(--ok-border);
+  background: var(--ok-surface);
+}
+
+.res-warn {
+  border-color: var(--amber-border);
+  background: var(--amber-surface);
+}
+
+.res-bad {
+  border-color: var(--err-border);
+  background: var(--err-surface);
+}</style>

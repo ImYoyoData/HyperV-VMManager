@@ -16,6 +16,7 @@ declare module 'vue' {
     HelpTip: typeof import('./components/HelpTip.vue')['default']
     HostConnectModal: typeof import('./components/HostConnectModal.vue')['default']
     NAlert: typeof import('naive-ui')['NAlert']
+    NAutoComplete: typeof import('naive-ui')['NAutoComplete']
     NButton: typeof import('naive-ui')['NButton']
     NCheckbox: typeof import('naive-ui')['NCheckbox']
     NCollapse: typeof import('naive-ui')['NCollapse']
@@ -47,6 +48,8 @@ declare module 'vue' {
     NStep: typeof import('naive-ui')['NStep']
     NSteps: typeof import('naive-ui')['NSteps']
     NSwitch: typeof import('naive-ui')['NSwitch']
+    NTabPane: typeof import('naive-ui')['NTabPane']
+    NTabs: typeof import('naive-ui')['NTabs']
     NTag: typeof import('naive-ui')['NTag']
     PageHeader: typeof import('./components/PageHeader.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
@@ -55,6 +58,7 @@ declare module 'vue' {
     TaskKindTag: typeof import('./components/TaskKindTag.vue')['default']
     TaskStatusTag: typeof import('./components/TaskStatusTag.vue')['default']
     TitleBar: typeof import('./components/TitleBar.vue')['default']
+    VmPortForwardPanel: typeof import('./components/VmPortForwardPanel.vue')['default']
     VmStateTag: typeof import('./components/VmStateTag.vue')['default']
   }
 }

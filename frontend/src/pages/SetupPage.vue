@@ -25,6 +25,7 @@ const setup = useSetupStore();
 
 const showBiosHelp = ref(false);
 const showUpgradeHelp = ref(false);
+const showGpuHelp = ref(false);
 
 const status = computed(() => setup.status);
 
@@ -126,6 +127,19 @@ function checkStatusLabel(check: EnvironmentCheck): string {
   }
 }
 
+function formatBytes(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return "未知";
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+function gpuPathLabel(path: string): string {
+  if (!path) return "";
+  if (path.length <= 80) return path;
+  return `${path.slice(0, 42)}…${path.slice(-32)}`;
+}
+
 function actionLabel(action: string): string {
   switch (action) {
     case "elevate":
@@ -140,6 +154,8 @@ function actionLabel(action: string): string {
       return "查看 BIOS 设置教程";
     case "upgrade-windows":
       return "查看版本升级建议";
+    case "gpu-help":
+      return "查看显存分配说明";
     default:
       return "";
   }
@@ -191,13 +207,16 @@ async function runAction(check: EnvironmentCheck) {
     case "upgrade-windows":
       showUpgradeHelp.value = true;
       return;
+    case "gpu-help":
+      showGpuHelp.value = true;
+      return;
     default:
       return;
   }
 }
 
 async function checkAgain() {
-  await setup.check();
+  await setup.check({ force: true });
   if (setup.ready) {
     message.success("环境检查通过");
   }
@@ -391,6 +410,91 @@ onMounted(() => {
     <n-alert type="warning" :show-icon="true">
       升级系统版本前请备份重要数据，并确认设备满足目标版本的要求。
     </n-alert>
+  </n-modal>
+
+  <n-modal
+    v-model:show="showGpuHelp"
+    preset="card"
+    title="Hyper-V 的显存与 GPU 分配"
+    style="width: 720px"
+  >
+    <n-alert
+      :type="status?.gpuAssignmentSupported ? 'success' : 'warning'"
+      :show-icon="true"
+    >
+      {{ status?.gpuDescription || "尚未读取到 GPU 信息。" }}
+    </n-alert>
+
+    <div class="card-title gpu-section-title">当前主机的显示适配器</div>
+    <div v-if="status?.gpus?.length" class="gpu-list">
+      <div
+        v-for="gpu in status.gpus"
+        :key="gpu.name + gpu.driverVersion"
+        class="gpu-item"
+      >
+        <div class="gpu-name">{{ gpu.name }}</div>
+        <div class="gpu-meta">
+          驱动 {{ gpu.driverVersion || "未知" }} · {{ gpu.status || "状态未知" }}
+        </div>
+      </div>
+    </div>
+    <div v-else class="form-hint">未检测到显示适配器。</div>
+
+    <template v-if="status?.partitionableGPUs?.length">
+      <div class="card-title gpu-section-title">可分区 GPU</div>
+      <div
+        v-for="gpu in status.partitionableGPUs"
+        :key="gpu.name"
+        class="gpu-item"
+      >
+        <div class="gpu-name">
+          {{ gpu.paravirtual ? "GPU-PV（共享整块显卡）" : "GPU-P（硬件分区）" }}
+        </div>
+        <div class="gpu-meta">
+          可选分区数：{{ gpu.validPartitionCounts?.join(" / ") || "未知" }}；
+          当前分区数：{{ gpu.partitionCount || "未知" }}；
+          显存：{{ formatBytes(gpu.totalVRAMBytes) }}
+          （可用 {{ formatBytes(gpu.availableVRAMBytes) }}）
+        </div>
+        <div class="gpu-path mono-text" :title="gpu.name">
+          {{ gpuPathLabel(gpu.name) }}
+        </div>
+      </div>
+    </template>
+
+    <div class="card-title gpu-section-title">微软的规则与建议</div>
+    <ul class="tutorial-steps">
+      <li>
+        <strong>默认虚拟显示适配器</strong>没有“显存大小”可调，只负责基本显示，
+        不提供 GPU 计算能力。
+      </li>
+      <li>
+        <strong>GPU-P（Windows Server 2025 起官方支持）</strong>：每台虚拟机获得一个
+        硬件分区，显存按“显卡总显存 ÷ 分区数”分配。分区数只能从显卡驱动提供的
+        ValidPartitionCounts 中选择，不能给单台虚拟机随意指定 8 GB 之类的数值；
+        目前一台虚拟机最多分配一个分区。
+      </li>
+      <li>
+        <strong>GPU-PV（Win10/Win11 客户端）</strong>：非官方方式，虚拟机共享整块物理
+        显卡，显存动态共享，不能限制或预留；需要手动把宿主机显卡驱动复制到虚拟机，
+        微软不支持，驱动或系统更新后可能失效。
+      </li>
+      <li>
+        <strong>DDA 整卡直通</strong>：Windows Server 支持把一整块 GPU 直通给一台
+        虚拟机，兼容性最好，但一块 GPU 只能给一台虚拟机；客户端 Windows 不支持 DDA。
+      </li>
+      <li>
+        <strong>推荐</strong>：如果需要“可管理的显存分配”，宿主机使用
+        <strong>Windows Server 2025</strong>（单机用 Standard 即可；群集或实时迁移用
+        Datacenter），BIOS/UEFI 需开启 SR-IOV 与 IOMMU，并准备受支持的数据中心 GPU
+        与厂商 vGPU 驱动。官方列表包括 NVIDIA A2、A10、A16、A40、L2、L4、L40、
+        L40S、RTX Pro 6000 Blackwell Server Edition，以及 AMD Radeon PRO V710。
+      </li>
+      <li>
+        如果只是偶尔在 Win10/Win11 上运行图形应用，可以继续使用默认虚拟显示适配器，
+        或尝试非官方 GPU-PV，但不建议用于生产环境。
+      </li>
+    </ul>
   </n-modal>
 
   <div v-if="status && !setup.ready" class="panel ai-panel">
@@ -599,5 +703,43 @@ onMounted(() => {
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 11.5px;
   line-height: 1.7;
+}
+
+.gpu-section-title {
+  margin-top: 16px;
+}
+
+.gpu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.gpu-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-inset);
+}
+
+.gpu-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.gpu-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.gpu-path {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  word-break: break-all;
 }
 </style>

@@ -3,12 +3,13 @@
 本文档记录尚未实现、但已经确定方向的能力。目标是让后续开发在不破坏现有任务队列与
 API 语义的前提下逐步接入。
 
-## 1. 多主机连接（基础版已实现）
+## 1. 多主机连接（已实现）
 
 **已实现：**
 
 - 新增“计算机”页面：本机 / 远程主机列表、添加、编辑、删除、连接与切换。
-- `hosts.json` 持久化主机配置（不保存密码）；密码只保存在应用内存中。
+- `hosts.json` 持久化主机配置（不保存密码）；勾选“记住密码”时密码加密保存在
+  Windows 凭据管理器，供 WinRM、VMConnect 与 Hyper-V 管理器复用。
 - 远程执行通过 WinRM：`New-PSSession` + `Invoke-Command`，复用同一套 PowerShell 脚本协议。
 - 任务对象与 payload 增加 `hostID`；任务执行时使用提交时绑定的主机，切换当前主机不影响已排队任务。
 - 新建/克隆页可选择目标计算机（仅已连接主机），任务绑定该主机；克隆会读取目标主机上的虚拟机列表。
@@ -18,7 +19,6 @@ API 语义的前提下逐步接入。
 
 **待完善：**
 
-- 使用 DPAPI 保存密码（当前每次启动需要重新输入）。
 - 远程目录浏览（通过远端 `Get-ChildItem`）。
 - 编辑/删除/电源接口显式支持 `hostId`（当前这些操作仍作用于当前主机）。
 
@@ -40,8 +40,8 @@ type HostProfile struct {
 ```
 
 - 主机列表保存在 `%AppData%\HyperV-VMManager\hosts.json`。
-- 密码使用 Windows DPAPI（`CryptProtectData`，当前用户作用域）加密，或直接使用
-  Windows 凭据管理器（`cmdkey` / Credential Manager API）保存，避免明文落盘。
+- 密码通过 Windows 凭据管理器（`cmdkey` / Credential Manager API）保存，目标名使用
+  `TERMSRV/<主机>`，避免明文落盘，并可被 VMConnect 复用。
 - 当前主机是应用级状态，切换主机时前端刷新 VM 列表、任务列表与增强会话状态。
 
 ### 1.2 执行层抽象
@@ -103,18 +103,18 @@ try {
 - 任务已增加 `hostID`，任务执行器根据 `hostID` 选择 `Executor`。
 - 已实现：
   - `GET /api/v1/hosts`
-  - `POST /api/v1/hosts/{id}/connect`（连接并切换当前主机）
-- 待实现：
   - `POST /api/v1/hosts`（通过 API 新增连接配置）
+  - `POST /api/v1/hosts/{id}/connect`（连接并切换当前主机）
+  - `GET /api/v1/hosts/{id}/capacity`
+  - 新建/克隆接口显式支持 `hostId` 查询参数或 `X-HyperV-Host` 头。
+- 待实现：
   - `POST /api/v1/hosts/{id}/test`
-  - `GET /api/v1/hosts/{id}/vms`
-  - 提交类接口显式支持 `hostId` 字段或 `X-HyperV-Host` 头。
-- 当前提交类接口作用于“当前主机”，与 GUI 共用同一状态。
+  - 编辑/删除/电源接口显式支持 `hostId`。
 
-## 2. 端口映射
+## 2. 端口映射（已实现）
 
-结论：**作为虚拟机网络附加能力内置，但先设计、暂不实现**。它是宿主网络配置，
-可以放进虚拟机详情的“网络 / 端口映射”区域，并通过 API 管理。
+当前实现：内部交换机 + 自建 Windows NAT（`New-NetNat`），端口转发使用
+`netsh interface portproxy`（TCP），并在虚拟机详情、虚拟交换机页面和内网穿透页面提供管理入口。
 
 ### 2.1 方案对比
 
@@ -160,10 +160,11 @@ DELETE /api/v1/vms/{name}/port-mappings/{id}
 
 创建/删除应进入任务队列（`kind=portmapping`），避免与克隆、创建并发修改网络配置。
 
-## 3. 网页访问 / 公网预览
+## 3. 网页访问 / 公网预览（已实现）
 
-目标：桌面应用运行时开启一个网页入口，在浏览器（含手机/远程电脑）上完成同样的
-虚拟机管理；配合路由器端口映射或隧道实现公网访问。
+当前实现：内嵌 `internal/httpapi` 提供静态资源与 `/api/v1/*`，桌面端设置页可配置监听
+地址、端口、账号密码；登录使用 HttpOnly Cookie，并限制登录失败频率。内置 frp 客户端
+可以把网页控制台和 NAT 端口转发映射到公网 frps。
 
 ### 3.1 推荐架构
 

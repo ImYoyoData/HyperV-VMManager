@@ -49,3 +49,13 @@ export interface Bootstrap {
     "appVersion": string;
     "wailsVersion": string;
 }
+
+/**
+ * TunnelMappingRequest 是虚拟机详情里“映射到公网”的输入。
+ */
+export interface TunnelMappingRequest {
+    "name": string;
+    "localIP": string;
+    "localPort": number;
+    "remotePort": number;
+}

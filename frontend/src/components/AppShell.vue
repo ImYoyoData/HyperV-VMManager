@@ -10,6 +10,7 @@ import {
   DesktopOutline,
   DocumentTextOutline,
   GitNetworkOutline,
+  GlobeOutline,
   GridOutline,
   ListOutline,
   ServerOutline,
@@ -91,6 +92,11 @@ const menuOptions = computed<MenuOption[]>(() => [
     icon: renderIcon(GitNetworkOutline),
   },
   {
+    label: "内网穿透",
+    key: "/tunnel",
+    icon: renderIcon(GlobeOutline),
+  },
+  {
     label: "环境检查",
     key: "/setup",
     icon: renderIcon(ShieldCheckmarkOutline),
@@ -133,7 +139,7 @@ function notifyTaskFinished(task: Task) {
   } else {
     notification.success({ title, content, duration: 3500 });
   }
-  void vmStore.fetch();
+  void vmStore.fetch({ silent: true, force: true });
 }
 
 let offTaskFinished: (() => void) | undefined;
@@ -168,20 +174,24 @@ onMounted(async () => {
       }
     });
     offHostChanged = Events.On("host:changed", async () => {
-      await app.init();
-      await vmStore.fetch();
-      await taskStore.fetch();
-      await setup.check();
+      // 不同主机的虚拟机同名很常见，必须丢弃上一台主机的详情缓存。
+      vmStore.clear();
+      await Promise.all([
+        app.init(),
+        vmStore.fetch({ force: true }),
+        taskStore.fetch(),
+        setup.check({ force: true }),
+      ]);
     });
   }
   window.addEventListener("hvvm:unauthorized", onUnauthorized);
 
   try {
-    await app.init();
+    // 首屏数据与环境检查互不依赖，并行执行可以把启动等待缩短近一半。
+    await Promise.all([app.init(), setup.check()]);
     if (app.settings?.theme) {
       themeStore.setMode(app.settings.theme as ThemeMode);
     }
-    await setup.check();
     if (!setup.ready && !setup.skipped && route.path !== "/setup") {
       await router.replace("/setup");
     }

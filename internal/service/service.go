@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,7 +29,7 @@ import (
 )
 
 const (
-	appVersion   = "0.2.0"
+	appVersion   = "0.3.0"
 	wailsVersion = "3.1.0"
 )
 
@@ -227,15 +228,39 @@ func (s *HyperVService) UpdateHost(request hosts.Request) (*hosts.Item, error) {
 		!strings.EqualFold(oldProfile.Address, profile.Address) {
 		_ = credentials.Delete(oldProfile.Address)
 	}
-	// 配置变化后，旧的连接缓存不再可信。
-	s.mu.Lock()
-	delete(s.clients, profile.ID)
-	if s.activeHostID == profile.ID {
-		s.activeHostID = hosts.LocalID
+	// 只有连接参数变化时才丢弃已建立的会话；仅修改显示名称不应
+	// 让当前主机断开并切回本机。
+	wasActive := s.activeHostIDValue() == profile.ID
+	if oldProfile == nil || !sameConnectionProfile(*oldProfile, profile) {
+		s.mu.Lock()
+		delete(s.clients, profile.ID)
+		if s.activeHostID == profile.ID {
+			s.activeHostID = hosts.LocalID
+		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 	item := s.hostItem(profile)
+	// 非当前主机的配置变化不需要让所有页面重新加载。
+	if wasActive {
+		s.emitHostChanged()
+	}
 	return &item, nil
+}
+
+func sameConnectionProfile(a, b hosts.Profile) bool {
+	return strings.EqualFold(strings.TrimSpace(a.Address), strings.TrimSpace(b.Address)) &&
+		a.Port == b.Port &&
+		a.UseSSL == b.UseSSL &&
+		strings.EqualFold(strings.TrimSpace(a.Username), strings.TrimSpace(b.Username)) &&
+		normalizeAuth(a.Authentication) == normalizeAuth(b.Authentication)
+}
+
+func normalizeAuth(value string) string {
+	auth := strings.ToLower(strings.TrimSpace(value))
+	if auth == "" {
+		return "default"
+	}
+	return auth
 }
 
 // RemoveHost 删除远程主机配置并断开缓存。
@@ -247,13 +272,16 @@ func (s *HyperVService) RemoveHost(id string) error {
 	if profile != nil && profile.Address != "" {
 		_ = credentials.Delete(profile.Address)
 	}
+	wasActive := s.activeHostIDValue() == id
 	s.mu.Lock()
 	delete(s.clients, id)
 	if s.activeHostID == id {
 		s.activeHostID = hosts.LocalID
 	}
 	s.mu.Unlock()
-	s.emitHostChanged()
+	if wasActive {
+		s.emitHostChanged()
+	}
 	return nil
 }
 
@@ -411,8 +439,11 @@ func (s *HyperVService) ServiceStartup(ctx context.Context, _ application.Servic
 	if app := application.Get(); app != nil {
 		s.queue.SetEmitter(func(task tasks.Task) {
 			app.Event.Emit("task:update", task)
-			applog.Info("任务 %s [%s] 主机=%s 目标=%s 状态=%s 进度=%d%% 步骤=%s",
-				task.ID, task.Kind, task.HostID, task.Target, task.Status, task.Progress, task.Step)
+			// 只在任务开始、结束或失败时写应用日志，进度刷新不重复刷盘。
+			if task.Status != tasks.StatusRunning || task.Progress <= 1 || strings.TrimSpace(task.Error) != "" {
+				applog.Info("任务 %s [%s] 主机=%s 目标=%s 状态=%s 进度=%d%% 步骤=%s",
+					task.ID, task.Kind, task.HostID, task.Target, task.Status, task.Progress, task.Step)
+			}
 			if strings.TrimSpace(task.Error) != "" {
 				applog.Error("任务 %s 失败: %s", task.ID, task.Error)
 			}
@@ -624,7 +655,7 @@ func (s *HyperVService) GetBootstrap() (*Bootstrap, error) {
 	}()
 	go func() {
 		defer wg.Done()
-		vms, err := s.currentClient().ListVMs(ctx)
+		vms, err := s.currentClient().ListVMSummaries(ctx)
 		if err != nil {
 			bootstrap.VMError = err.Error()
 			return
@@ -647,6 +678,17 @@ func (s *HyperVService) GetHostInfo() (*hyperv.HostInfo, error) {
 	return s.currentClient().HostInfo(ctx)
 }
 
+// SetLocalUserPassword 通过当前 WinRM 连接修改远程主机本地账户密码。
+func (s *HyperVService) SetLocalUserPassword(req hyperv.SetLocalUserPasswordRequest) error {
+	client := s.currentClient()
+	if client.Target().IsLocal() {
+		return errors.New("只支持修改远程主机的本地账户密码，本机账户请使用 Windows 设置或 net user")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return client.SetLocalUserPassword(ctx, req)
+}
+
 // GetEnvironmentStatus 检查 Windows 版本、虚拟化、Hyper-V 组件与增强会话。
 func (s *HyperVService) GetEnvironmentStatus() (*hyperv.EnvironmentStatus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -659,6 +701,13 @@ func (s *HyperVService) ListVMs() ([]hyperv.VM, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	return s.currentClient().ListVMs(ctx)
+}
+
+// ListVMSummaries 返回轻量虚拟机列表，供自动刷新和仪表盘统计使用。
+func (s *HyperVService) ListVMSummaries() ([]hyperv.VM, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return s.currentClient().ListVMSummaries(ctx)
 }
 
 // ListVMsForHost 返回指定主机的虚拟机列表（用于新建/克隆时选择目标计算机）。
@@ -681,13 +730,36 @@ func (s *HyperVService) GetHostCapacity(hostID string) (*hyperv.HostCapacity, er
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	info, err := client.HostInfo(ctx)
-	if err != nil {
-		return nil, err
+	// 主机信息、虚拟机列表和磁盘容量互不依赖，并行读取可把等待时间
+	// 从三次 PowerShell 启动之和缩短到最慢的一次。
+	var (
+		wg       sync.WaitGroup
+		info     *hyperv.HostInfo
+		vms      []hyperv.VM
+		disks    []hyperv.DiskSpace
+		infoErr  error
+		vmsError error
+	)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		info, infoErr = client.HostInfo(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		vms, vmsError = client.ListVMSummaries(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		disks, _ = client.DiskSpaces(ctx)
+	}()
+	wg.Wait()
+
+	if infoErr != nil {
+		return nil, infoErr
 	}
-	vms, err := client.ListVMs(ctx)
-	if err != nil {
-		return nil, err
+	if vmsError != nil {
+		return nil, vmsError
 	}
 	capacity := &hyperv.HostCapacity{
 		HostID:            hostID,
@@ -709,11 +781,10 @@ func (s *HyperVService) GetHostCapacity(hostID string) (*hyperv.HostCapacity, er
 		capacity.ReservedMemoryMB = capacity.TotalMemoryMB / 2
 	}
 	capacity.AvailableMemoryMB = capacity.TotalMemoryMB - capacity.ReservedMemoryMB - capacity.AllocatedMemoryMB
-	if disks, err := client.DiskSpaces(ctx); err == nil {
-		capacity.Disks = disks
-	} else {
-		capacity.Disks = []hyperv.DiskSpace{}
+	if disks == nil {
+		disks = []hyperv.DiskSpace{}
 	}
+	capacity.Disks = disks
 	return capacity, nil
 }
 
@@ -793,6 +864,20 @@ func (s *HyperVService) SubmitClone(hostID string, req hyperv.CloneRequest) (*ta
 	if err := hyperv.ValidateBandwidth(req.BandwidthMbps); err != nil {
 		return nil, err
 	}
+	if req.DiskMode == "" {
+		req.DiskMode = "copy"
+	}
+	switch req.DiskMode {
+	case "copy", "differencing":
+	default:
+		return nil, errors.New("克隆磁盘方式必须是 copy 或 differencing")
+	}
+	req.ExportDirectory = strings.TrimSpace(req.ExportDirectory)
+	if req.ExportDirectory != "" {
+		if err := hyperv.ValidateAbsoluteDirectory(req.ExportDirectory); err != nil {
+			return nil, fmt.Errorf("临时导出目录无效: %w", err)
+		}
+	}
 	resolvedHost, err := s.resolveHost(hostID)
 	if err != nil {
 		return nil, err
@@ -827,8 +912,11 @@ func (s *HyperVService) SubmitCreate(hostID string, req hyperv.CreateRequest) (*
 	if err := hyperv.ValidateBandwidth(req.BandwidthMbps); err != nil {
 		return nil, err
 	}
+	if req.DiskMode == "" {
+		req.DiskMode = "new"
+	}
 	switch req.DiskMode {
-	case "", "new":
+	case "new":
 		if req.DiskSizeGB < 1 {
 			return nil, errors.New("空硬盘大小至少 1 GB")
 		}
@@ -838,6 +926,21 @@ func (s *HyperVService) SubmitCreate(hostID string, req hyperv.CreateRequest) (*
 		}
 	default:
 		return nil, errors.New("未知的磁盘方式")
+	}
+	req.DiskType = strings.TrimSpace(req.DiskType)
+	if req.DiskType == "" {
+		req.DiskType = "dynamic"
+	}
+	switch req.DiskType {
+	case "dynamic", "fixed":
+	default:
+		return nil, errors.New("磁盘类型必须是 dynamic 或 fixed")
+	}
+	req.DiskDirectory = strings.TrimSpace(req.DiskDirectory)
+	if req.DiskDirectory != "" {
+		if err := hyperv.ValidateAbsoluteDirectory(req.DiskDirectory); err != nil {
+			return nil, fmt.Errorf("虚拟硬盘目录无效: %w", err)
+		}
 	}
 	resolvedHost, err := s.resolveHost(hostID)
 	if err != nil {
@@ -876,7 +979,22 @@ func (s *HyperVService) SubmitEdit(name string, req hyperv.EditRequest) (*tasks.
 			return nil, err
 		}
 	}
-	if req.NewName == "" && req.Memory == nil && req.CPUCount == nil && req.SwitchName == nil && req.BandwidthMbps == nil && req.CheckpointsEnabled == nil {
+	if len(req.Disks) > 0 {
+		seen := map[string]bool{}
+		for _, disk := range req.Disks {
+			if strings.TrimSpace(disk.Path) == "" || disk.SizeBytes <= 0 {
+				return nil, errors.New("硬盘路径和容量不能为空")
+			}
+			if seen[disk.Path] {
+				return nil, errors.New("同一块硬盘不能重复调整")
+			}
+			seen[disk.Path] = true
+		}
+	}
+	if req.NewName == "" && req.Memory == nil && req.CPUCount == nil && req.SwitchName == nil && req.BandwidthMbps == nil && req.CheckpointsEnabled == nil && req.NestedVirtualization == nil && len(req.Disks) == 0 &&
+		req.Notes == nil && req.AutomaticStartAction == nil && req.AutomaticStartDelay == nil && req.AutomaticStopAction == nil && req.AutomaticCheckpoints == nil &&
+		req.ProcessorReserve == nil && req.ProcessorMaximum == nil && req.ProcessorWeight == nil && req.ProcessorMigration == nil && req.HwThreadsPerCore == nil &&
+		req.MemoryBuffer == nil && req.MemoryPriority == nil && len(req.NetworkAdapters) == 0 && req.Security == nil && len(req.IntegrationServices) == 0 {
 		return nil, errors.New("没有需要修改的内容")
 	}
 	hostID := s.activeHostIDValue()
@@ -997,6 +1115,41 @@ func (s *HyperVService) RemoveSwitch(name string) error {
 	return s.currentClient().RemoveSwitch(ctx, name)
 }
 
+// ListNATNetworks 返回主机上的 Windows NAT 实例和端口转发规则。
+func (s *HyperVService) ListNATNetworks() ([]hyperv.NATNetwork, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	return s.currentClient().ListNATNetworks(ctx)
+}
+
+// CreateNATNetwork 创建内部交换机 + 自建 NAT。
+func (s *HyperVService) CreateNATNetwork(req hyperv.CreateNATRequest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer cancel()
+	return s.currentClient().CreateNATNetwork(ctx, req)
+}
+
+// RemoveNATNetwork 删除 NAT 实例，保留内部交换机和主机 IP。
+func (s *HyperVService) RemoveNATNetwork(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return s.currentClient().RemoveNATNetwork(ctx, name)
+}
+
+// AddNATStaticMapping 新增 NAT 端口转发。
+func (s *HyperVService) AddNATStaticMapping(req hyperv.NATStaticMappingRequest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return s.currentClient().AddNATStaticMapping(ctx, req)
+}
+
+// RemoveNATStaticMapping 删除 NAT 端口转发。
+func (s *HyperVService) RemoveNATStaticMapping(req hyperv.RemoveNATStaticMappingRequest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return s.currentClient().RemoveNATStaticMapping(ctx, req)
+}
+
 // GetEnhancedSessionStatus 读取增强会话状态。
 func (s *HyperVService) GetEnhancedSessionStatus() (*hyperv.EnhancedSessionStatus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -1019,6 +1172,29 @@ func (s *HyperVService) OpenTool(tool string) error {
 // ConnectVM 打开 VMConnect 控制台。
 func (s *HyperVService) ConnectVM(name string) error {
 	return s.currentClient().ConnectVM(name)
+}
+
+// ConnectVMWithCredential 使用远程主机账户启动 VMConnect。
+//
+// VMConnect 的 WinRM 查询使用独立进程的网络凭据，不会复用应用自己的
+// WinRM 会话；因此远程控制台必须用 LOGON_NETCREDENTIALS_ONLY 启动，
+// 让 VMConnect 内部使用这里填写的远程账户，而不是当前 Windows 登录账户。
+func (s *HyperVService) ConnectVMWithCredential(name, username, password string) error {
+	client := s.currentClient()
+	if client.Target().IsLocal() {
+		return client.ConnectVM(name)
+	}
+	username = strings.TrimSpace(username)
+	if username == "" || password == "" {
+		if storedUser, storedPass, ok := credentials.Load(client.Target().ComputerName); ok {
+			username = storedUser
+			password = storedPass
+		}
+	}
+	if username == "" || password == "" {
+		return errors.New("远程 VMConnect 需要远程宿主机的账户和密码；空密码账户默认不能远程登录，请先设置密码")
+	}
+	return client.ConnectVMWithCredential(name, username, password)
 }
 
 // IsAdmin 返回当前是否具备管理员权限。
@@ -1075,16 +1251,43 @@ func (s *HyperVService) SaveSettings(value settings.Settings) (*settings.Setting
 			return nil, err
 		}
 	}
+	previous := s.settings.Get()
 	saved, err := s.settings.Save(value)
 	if err != nil {
 		return nil, err
 	}
 	_ = applog.Init(saved.LogDir)
 	applog.Info("设置已保存，日志目录 %s", saved.LogDir)
-	s.applyWebConfig(saved)
-	s.applyTunnel(saved)
+	// 只有网页控制台配置真正变化时才重启 HTTP 服务；否则网页端保存
+	// 主题等普通设置会因为会话被清空而被迫重新登录。
+	if !webEndpointEqual(previous, saved) {
+		s.applyWebConfig(saved)
+	} else if !webAuthEqual(previous, saved) {
+		s.applyWebAuth(saved)
+	}
+	if !tunnelConfigEqual(previous, saved) {
+		s.applyTunnel(saved)
+	}
 	s.applyAutoStart(saved.AutoStart)
 	return &saved, nil
+}
+
+func webEndpointEqual(a, b settings.Settings) bool {
+	return a.Web.Enabled == b.Web.Enabled &&
+		a.Web.ListenAddress == b.Web.ListenAddress &&
+		a.Web.Port == b.Web.Port
+}
+
+func webAuthEqual(a, b settings.Settings) bool {
+	return a.Web.Username == b.Web.Username &&
+		a.Web.Password == b.Web.Password &&
+		reflect.DeepEqual(a.APIKeys, b.APIKeys)
+}
+
+func tunnelConfigEqual(a, b settings.Settings) bool {
+	return reflect.DeepEqual(a.Tunnel, b.Tunnel) &&
+		a.Web.Enabled == b.Web.Enabled &&
+		a.Web.Port == b.Web.Port
 }
 
 func (s *HyperVService) applyAutoStart(enabled bool) {
@@ -1107,6 +1310,14 @@ type APIKeyRequest struct {
 	Name       string   `json:"name"`
 	Permission string   `json:"permission"`
 	HostIDs    []string `json:"hostIDs,omitempty"`
+}
+
+// TunnelMappingRequest 是虚拟机详情里“映射到公网”的输入。
+type TunnelMappingRequest struct {
+	Name       string `json:"name"`
+	LocalIP    string `json:"localIP"`
+	LocalPort  int    `json:"localPort"`
+	RemotePort int    `json:"remotePort"`
 }
 
 // ListAPIKeys 返回所有 API Key（包含 Token，仅桌面端使用）。
@@ -1134,7 +1345,7 @@ func (s *HyperVService) CreateAPIKey(request APIKeyRequest) (*settings.APIKey, e
 	if err != nil {
 		return nil, err
 	}
-	s.applyWebConfig(saved)
+	s.applyWebAuth(saved)
 	return &key, nil
 }
 
@@ -1167,7 +1378,7 @@ func (s *HyperVService) UpdateAPIKey(request APIKeyRequest) (*settings.APIKey, e
 	if !found {
 		return nil, errors.New("API Key 不存在")
 	}
-	s.applyWebConfig(saved)
+	s.applyWebAuth(saved)
 	return &updated, nil
 }
 
@@ -1191,7 +1402,7 @@ func (s *HyperVService) DeleteAPIKey(id string) error {
 	if !found {
 		return errors.New("API Key 不存在")
 	}
-	s.applyWebConfig(saved)
+	s.applyWebAuth(saved)
 	return nil
 }
 
@@ -1216,7 +1427,7 @@ func (s *HyperVService) RegenerateAPIKeyToken(id string) (*settings.APIKey, erro
 	if !found {
 		return nil, errors.New("API Key 不存在")
 	}
-	s.applyWebConfig(saved)
+	s.applyWebAuth(saved)
 	return &updated, nil
 }
 
@@ -1256,6 +1467,22 @@ func (s *HyperVService) applyWebConfig(value settings.Settings) {
 	}()
 }
 
+// applyWebAuth 只更新登录凭据与 API Key，不重启监听，
+// 因此不会让网页控制台已有的登录会话失效。
+func (s *HyperVService) applyWebAuth(value settings.Settings) {
+	if s.api == nil {
+		return
+	}
+	s.api.UpdateAuth(httpapi.Config{
+		Enabled:       value.Web.Enabled,
+		ListenAddress: value.Web.ListenAddress,
+		Port:          value.Web.Port,
+		Username:      value.Web.Username,
+		Password:      value.Web.Password,
+		APIKeys:       value.APIKeys,
+	})
+}
+
 // applyTunnel 按新设置重启内置 frp 客户端。
 func (s *HyperVService) applyTunnel(value settings.Settings) {
 	go func() {
@@ -1274,6 +1501,40 @@ func (s *HyperVService) GetTunnelStatus() tunnel.Status {
 func (s *HyperVService) RestartTunnel() tunnel.Status {
 	current := s.settings.Get()
 	return s.tunnel.Apply(tunnel.ConfigFromSettings(current))
+}
+
+// AddTunnelMapping 把一条 NAT 端口转发追加到内网穿透映射并保存。
+// 添加后仍需要在“内网穿透”页面填写 frps 并启用。
+func (s *HyperVService) AddTunnelMapping(req TunnelMappingRequest) (*settings.Settings, error) {
+	req.Name = strings.TrimSpace(req.Name)
+	req.LocalIP = strings.TrimSpace(req.LocalIP)
+	if req.LocalIP == "" {
+		req.LocalIP = "127.0.0.1"
+	}
+	if req.LocalPort < 1 || req.LocalPort > 65535 {
+		return nil, errors.New("本地端口必须在 1 到 65535 之间")
+	}
+	if req.RemotePort < 0 || req.RemotePort > 65535 {
+		return nil, errors.New("远程端口必须在 0 到 65535 之间")
+	}
+	if req.Name == "" {
+		req.Name = fmt.Sprintf("map-%d", req.LocalPort)
+	}
+	saved, err := s.settings.Update(func(current *settings.Settings) {
+		current.Tunnel.Mappings = append(current.Tunnel.Mappings, settings.TunnelMapping{
+			ID:         "map-" + randomHex(4),
+			Enabled:    true,
+			Name:       req.Name,
+			LocalIP:    req.LocalIP,
+			LocalPort:  req.LocalPort,
+			RemotePort: req.RemotePort,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.applyTunnel(saved)
+	return &saved, nil
 }
 
 func randomHex(size int) string {

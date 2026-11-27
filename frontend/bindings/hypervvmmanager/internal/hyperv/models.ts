@@ -9,10 +9,27 @@ export interface CloneRequest {
     "newName": string;
     "targetDirectory": string;
     "stopSourceIfRunning": boolean;
+
+    /**
+     * copy | differencing
+     */
+    "diskMode": string;
+    "exportDirectory"?: string;
+    "nestedVirtualization": boolean;
     "memory": MemoryOptions;
     "cpuCount": number;
     "switchName": string;
     "bandwidthMbps": number;
+}
+
+/**
+ * CreateNATRequest 是创建“内部交换机 + 自建 NAT”的参数。
+ */
+export interface CreateNATRequest {
+    "name": string;
+    "switchName": string;
+    "hostIP": string;
+    "prefixLength": number;
 }
 
 /**
@@ -31,10 +48,17 @@ export interface CreateRequest {
      * differencing | copy | new
      */
     "diskMode": string;
+
+    /**
+     * dynamic | fixed
+     */
+    "diskType": string;
+    "diskDirectory"?: string;
     "imagePath": string;
     "diskSizeGB": number;
     "isoPath": string;
     "disableCheckpoints": boolean;
+    "nestedVirtualization": boolean;
 }
 
 /**
@@ -61,6 +85,15 @@ export interface DVDDrive {
 }
 
 /**
+ * DiskResize 是编辑虚拟机时对单块虚拟硬盘的容量调整。
+ */
+export interface DiskResize {
+    "path": string;
+    "sizeBytes": number;
+    "allowShrink"?: boolean;
+}
+
+/**
  * DiskSpace 描述一个逻辑磁盘的容量。
  */
 export interface DiskSpace {
@@ -79,6 +112,24 @@ export interface EditRequest {
     "switchName"?: string | null;
     "bandwidthMbps"?: number | null;
     "checkpointsEnabled"?: boolean | null;
+    "nestedVirtualization"?: boolean | null;
+    "disks"?: DiskResize[] | null;
+    "stopVMForDiskResize"?: boolean;
+    "notes"?: string | null;
+    "automaticStartAction"?: string | null;
+    "automaticStartDelay"?: number | null;
+    "automaticStopAction"?: string | null;
+    "automaticCheckpoints"?: boolean | null;
+    "processorReserve"?: number | null;
+    "processorMaximum"?: number | null;
+    "processorWeight"?: number | null;
+    "processorMigration"?: boolean | null;
+    "hwThreadsPerCore"?: number | null;
+    "memoryBuffer"?: number | null;
+    "memoryPriority"?: number | null;
+    "networkAdapters"?: NetworkAdapterUpdate[] | null;
+    "security"?: SecurityUpdate | null;
+    "integrationServices"?: IntegrationServiceUpdate[] | null;
 }
 
 /**
@@ -104,7 +155,7 @@ export interface EnvironmentCheck {
 
     /**
      * Action 由前端映射为按钮：elevate | open-features | open-services |
-     * fix-enhanced-session | bios | upgrade-windows | none
+     * fix-enhanced-session | bios | upgrade-windows | gpu-help | none
      */
     "action": string;
 }
@@ -130,6 +181,7 @@ export interface EnvironmentStatus {
     "slatSupported": boolean;
     "hyperVFeatureState": string;
     "hyperVFeatureKnown": boolean;
+    "hyperVFunctional": boolean;
     "hyperVModuleAvailable": boolean;
     "hyperVVersion": string;
     "vmServiceStatus": string;
@@ -137,6 +189,11 @@ export interface EnvironmentStatus {
     "termServicePresent": boolean;
     "enhancedSessionEnabled": boolean;
     "enhancedSessionKnown": boolean;
+    "gpus": GPUDevice[] | null;
+    "partitionableGPUs": PartitionableGPU[] | null;
+    "gpuAssignmentMode": string;
+    "gpuAssignmentSupported": boolean;
+    "gpuDescription": string;
 
     /**
      * ready | needs-action | unsupported
@@ -148,6 +205,15 @@ export interface EnvironmentStatus {
 }
 
 /**
+ * GPUDevice 是主机上的显示适配器。
+ */
+export interface GPUDevice {
+    "name": string;
+    "driverVersion": string;
+    "status": string;
+}
+
+/**
  * HardDrive 是虚拟硬盘的只读视图。
  */
 export interface HardDrive {
@@ -155,6 +221,11 @@ export interface HardDrive {
     "controllerType": string;
     "controllerNumber": number;
     "controllerLocation": number;
+    "virtualSizeBytes": number;
+    "fileSizeBytes": number;
+    "minimumSizeBytes": number;
+    "vhdType": string;
+    "parentPath": string;
 }
 
 /**
@@ -193,6 +264,7 @@ export interface HostInfo {
     "termServiceStatus": string;
     "isAdmin": boolean;
     "moduleAvailable": boolean;
+    "localUsers": LocalUser[] | null;
 }
 
 /**
@@ -207,6 +279,36 @@ export interface HostNetworkAdapter {
 }
 
 /**
+ * IntegrationService 是虚拟机集成服务的一项。
+ */
+export interface IntegrationService {
+    "name": string;
+    "displayName": string;
+    "enabled": boolean;
+}
+
+/**
+ * IntegrationServiceUpdate 是单个集成服务的开关。
+ */
+export interface IntegrationServiceUpdate {
+    "name": string;
+    "enabled": boolean;
+}
+
+/**
+ * LocalUser 是主机上的本地账户，用于在远程 VMConnect 时选择正确的登录名。
+ * PasswordRequired 为 false 通常表示账户没有设置密码；Windows 默认禁止
+ * 空密码本地账户进行远程登录（包括远程 VMConnect）。
+ */
+export interface LocalUser {
+    "name": string;
+    "fullName": string;
+    "enabled": boolean;
+    "passwordRequired": boolean;
+    "principalSource": string;
+}
+
+/**
  * MemoryOptions 描述虚拟机的内存配置，单位 MB。
  */
 export interface MemoryOptions {
@@ -217,14 +319,138 @@ export interface MemoryOptions {
 }
 
 /**
- * NetworkAdapter 是虚拟机网络适配器的只读视图。
+ * NATNetwork 是 Windows NAT 实例及其对应的内部交换机和主机地址。
+ */
+export interface NATNetwork {
+    "name": string;
+
+    /**
+     * 192.168.100.0/24
+     */
+    "prefix": string;
+
+    /**
+     * 192.168.100.1
+     */
+    "hostIP": string;
+    "externalIP": string;
+    "switchName": string;
+    "active": boolean;
+    "staticMappings": NATStaticMapping[] | null;
+}
+
+/**
+ * NATStaticMapping 是与内部 NAT 网络关联的一条 Windows portproxy 端口转发规则。
+ */
+export interface NATStaticMapping {
+    /**
+     * 目前仅支持 TCP
+     */
+    "protocol": string;
+    "externalIPAddress": string;
+    "externalPort": number;
+    "internalIPAddress": string;
+    "internalPort": number;
+}
+
+/**
+ * NATStaticMappingRequest 是新增 NAT 端口转发的参数。
+ */
+export interface NATStaticMappingRequest {
+    "natName": string;
+    "protocol": string;
+    "externalPort": number;
+    "internalIPAddress": string;
+    "internalPort": number;
+}
+
+/**
+ * NetworkAdapter 是虚拟机网络适配器的视图与可编辑配置。
  */
 export interface NetworkAdapter {
+    "id": string;
     "name": string;
     "switchName": string;
     "macAddress": string;
+    "dynamicMacAddress": boolean;
+    "macAddressSpoofing": string;
+    "dhcpGuard": string;
+    "routerGuard": string;
+    "vlanMode": string;
+    "vlanID": number;
+    "deviceNaming": string;
+    "vmqWeight": number;
+    "iovWeight": number;
+    "ipsecOffload": boolean;
+    "stormLimit": number;
+    "maximumBandwidthBps": number;
     "status": string;
     "ipAddresses": string[] | null;
+}
+
+/**
+ * NetworkAdapterUpdate 是编辑虚拟机时对单个网络适配器的修改。
+ */
+export interface NetworkAdapterUpdate {
+    "id": string;
+    "name"?: string;
+    "switchName"?: string | null;
+    "dynamicMacAddress"?: boolean | null;
+    "staticMacAddress"?: string | null;
+    "macAddressSpoofing"?: string | null;
+    "dhcpGuard"?: string | null;
+    "routerGuard"?: string | null;
+    "vlanMode"?: string | null;
+    "vlanID"?: number | null;
+    "deviceNaming"?: string | null;
+    "vmqWeight"?: number | null;
+    "iovWeight"?: number | null;
+    "ipsecOffload"?: boolean | null;
+    "stormLimit"?: number | null;
+    "bandwidthMbps"?: number | null;
+}
+
+/**
+ * PartitionableGPU 是支持 Hyper-V GPU 分区的显卡。
+ * Paravirtual 为 true 时表示这是客户端 Windows 上的 GPU-PV（共享整块显卡，
+ * 不能按分区限制显存），而不是 Windows Server 2025 的硬件分区 GPU-P。
+ */
+export interface PartitionableGPU {
+    "name": string;
+    "paravirtual": boolean;
+    "validPartitionCounts": number[] | null;
+    "partitionCount": number;
+    "totalVRAMBytes": number;
+    "availableVRAMBytes": number;
+}
+
+/**
+ * RemoveNATStaticMappingRequest 是删除 NAT 端口转发的参数。
+ */
+export interface RemoveNATStaticMappingRequest {
+    "natName": string;
+    "protocol": string;
+    "externalPort": number;
+}
+
+/**
+ * SecurityUpdate 是虚拟机安全与固件设置。
+ */
+export interface SecurityUpdate {
+    "tpmEnabled"?: boolean | null;
+    "encryptStateAndVmMigrationTraffic"?: boolean | null;
+    "virtualizationBasedSecurityOptOut"?: boolean | null;
+    "secureBoot"?: boolean | null;
+    "secureBootTemplate"?: string | null;
+    "preferredNetworkBootProtocol"?: string | null;
+}
+
+/**
+ * SetLocalUserPasswordRequest 用于通过 WinRM 修改远程主机本地账户密码。
+ */
+export interface SetLocalUserPasswordRequest {
+    "userName": string;
+    "password": string;
 }
 
 /**
@@ -249,6 +475,27 @@ export interface VM {
     "networks": NetworkAdapter[] | null;
     "hardDrives": HardDrive[] | null;
     "dvdDrives": DVDDrive[] | null;
+    "nestedVirtualization": boolean;
+    "notes": string;
+    "automaticStartAction": string;
+    "automaticStartDelay": number;
+    "automaticStopAction": string;
+    "automaticCheckpoints": boolean;
+    "processorReserve": number;
+    "processorMaximum": number;
+    "processorWeight": number;
+    "processorMigration": boolean;
+    "hwThreadsPerCore": number;
+    "memoryBuffer": number;
+    "memoryPriority": number;
+    "secureBoot": string;
+    "secureBootTemplate": string;
+    "networkBootProtocol": string;
+    "tpmEnabled": boolean;
+    "shielded": boolean;
+    "encryptTraffic": boolean;
+    "vbsOptOut": boolean;
+    "integrationServices": IntegrationService[] | null;
 }
 
 /**
